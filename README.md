@@ -14,6 +14,10 @@ This repository is intentionally security-first. It implements the Rabbit R1/Ope
 
 Status: runnable MVP. Do not expose directly to the public Internet.
 
+## Agent handoff
+
+If you hand this repository to Hermes Agent or another autonomous agent and want it to set up the gateway and produce a Rabbit R1 pairing QR, point it at [`AGENTS.md`](AGENTS.md) and [`docs/agent-setup.md`](docs/agent-setup.md). Those files contain the secret-safe setup runbook, probe commands, QR generation steps, and final report template.
+
 ## Install
 
 Supported Python versions: Python 3.10 and newer. CI currently exercises Python 3.10,

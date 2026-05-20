@@ -2,6 +2,8 @@
 
 This is the minimal end-to-end path for a Rabbit R1 to talk to Hermes Agent.
 
+If an autonomous agent is doing the setup and QR generation for you, use [`docs/agent-setup.md`](agent-setup.md) plus the repository-level [`AGENTS.md`](../AGENTS.md). Those files are written as an agent runbook and include secret-handling requirements.
+
 ## Prerequisites
 
 - Hermes Agent is installed and `hermes chat -q 'hello'` works on the host.
