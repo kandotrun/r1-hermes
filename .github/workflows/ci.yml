@@ -7,15 +7,47 @@ on:
 
 jobs:
   test:
+    name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - name: Install
+          python-version: ${{ matrix.python-version }}
+      - name: Smoke editable install
         run: python -m pip install -e '.[dev,qr]'
+      - name: Package metadata
+        run: |
+          python - <<'PY'
+          import importlib.metadata as metadata
+
+          distribution = metadata.distribution("r1-hermes")
+          assert distribution.metadata["Name"] == "r1-hermes"
+          assert distribution.metadata["Requires-Python"] == ">=3.10"
+
+          scripts = [
+              entry_point
+              for entry_point in distribution.entry_points
+              if entry_point.group == "console_scripts" and entry_point.name == "r1-hermes"
+          ]
+          assert scripts, "missing r1-hermes console script"
+          PY
+          python -m pip check
+      - name: CLI help smoke
+        run: |
+          r1-hermes --help
+          r1-hermes serve --help
+          r1-hermes hermes --help
+          r1-hermes payload --help
+          r1-hermes qr --help
+          r1-hermes probe --help
       - name: Lint
         run: python -m ruff check .
       - name: Test
         run: python -m pytest -q
+      - name: Compile
+        run: python -m compileall -q src tests

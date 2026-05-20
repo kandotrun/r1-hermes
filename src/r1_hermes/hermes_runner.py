@@ -54,7 +54,7 @@ class HermesCliRunner:
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(), timeout=self.timeout_seconds
             )
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             process.kill()
             try:
                 await process.wait()
