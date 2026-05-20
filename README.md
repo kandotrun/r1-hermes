@@ -39,6 +39,11 @@ For development:
 python -m pip install -e '.[dev,qr]'
 ```
 
+Before opening security-sensitive CI or release changes, also run the local audit and distribution
+build checks in [`docs/development-checks.md`](docs/development-checks.md). Dependency advisories
+should be fixed by upgrading or tightening vulnerable ranges whenever possible; avoid suppressions
+unless the advisory is clearly unreachable and documented.
+
 ## 1. Create a gateway token
 
 The token is a bearer secret. Do not paste it into public chats or logs.

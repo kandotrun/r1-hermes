@@ -37,6 +37,10 @@ jobs:
           assert scripts, "missing r1-hermes console script"
           PY
           python -m pip check
+      - name: Dependency audit
+        run: |
+          python -m pip_audit . --strict --progress-spinner off
+          python -m pip_audit --local --progress-spinner off --skip-editable
       - name: CLI help smoke
         run: |
           r1-hermes --help
@@ -51,3 +55,23 @@ jobs:
         run: python -m pytest -q
       - name: Compile
         run: python -m compileall -q src tests
+      - name: Build distributions
+        run: |
+          rm -rf dist build
+          python -m build --sdist --wheel
+      - name: Verify wheel install
+        run: |
+          wheel_venv="$RUNNER_TEMP/r1-hermes-wheel"
+          python -m venv "$wheel_venv"
+          "$wheel_venv/bin/python" -m pip install --upgrade pip
+          "$wheel_venv/bin/python" -m pip install dist/*.whl
+          "$wheel_venv/bin/python" -m pip check
+          "$wheel_venv/bin/r1-hermes" --help
+      - name: Verify sdist install
+        run: |
+          sdist_venv="$RUNNER_TEMP/r1-hermes-sdist"
+          python -m venv "$sdist_venv"
+          "$sdist_venv/bin/python" -m pip install --upgrade pip
+          "$sdist_venv/bin/python" -m pip install dist/*.tar.gz
+          "$sdist_venv/bin/python" -m pip check
+          "$sdist_venv/bin/r1-hermes" --help
