@@ -21,7 +21,7 @@ For supported Python versions and disclosure routing, see [`../README.md`](../RE
 4. No unauthenticated admin UI.
 5. Device tokens are stored as SHA-256 hashes under a `0700` state directory and bound to the original `device.id`.
 6. Unauthenticated handshake limits are enforced by peer IP before authentication.
-7. Authenticated rate limit, length limit, and per-device concurrency limit are enforced before Hermes execution.
+7. Authenticated rate limit, length limit, global concurrency limit, and per-device concurrency limit are enforced before Hermes execution.
 8. QR payloads contain secrets and must be shared/retained accordingly.
 
 ## Recommended deployment
@@ -46,6 +46,14 @@ vector, not through a shell. R1 message text is passed as the `--query` argument
 successful `connect`, length/rate/concurrency checks, and payload normalization. Gateway tokens,
 device tokens, QR payloads, and raw auth headers are never needed by the Hermes subprocess and must
 not be added to command-line arguments, environment logging, or error responses.
+
+The default process caps are intentionally small: `R1_HERMES_GLOBAL_CONCURRENCY=2` across the whole
+gateway and `R1_HERMES_PER_DEVICE_CONCURRENCY=1` per authenticated device ID. Keep these defaults
+for a single Rabbit R1 or a small personal deployment. For multiple trusted devices, raise the
+global cap only after sizing CPU, memory, model/API limits, and expected Hermes runtime duration;
+avoid raising the per-device cap unless the operator explicitly accepts that one physical device can
+consume multiple Hermes subprocess slots. When a cap is reached, the gateway returns a generic
+`BUSY` response and does not start Hermes.
 
 The native Gateway prototype in `src/r1_hermes/native_gateway.py` preserves the same preconditions:
 it converts only authenticated `chat.send` text into a gateway-style message event, excludes message

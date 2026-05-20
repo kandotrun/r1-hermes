@@ -271,3 +271,90 @@ def test_revoke_command_fails_for_unknown_device(monkeypatch, tmp_path):
 
     with pytest.raises(SystemExit, match="device not found: missing"):
         cli.main()
+
+
+def test_serve_command_passes_concurrency_options(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeAdapter:
+        def __init__(self, config, *, message_handler):
+            captured["config"] = config
+            captured["message_handler"] = message_handler
+
+    async def fake_run_forever(adapter, *, ready_file=None):
+        captured["adapter"] = adapter
+        captured["ready_file"] = ready_file
+
+    monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
+    monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "serve",
+            "--state-dir",
+            str(tmp_path),
+            "--global-concurrency",
+            "5",
+            "--per-device-concurrency",
+            "2",
+        ],
+    )
+
+    cli.main()
+
+    assert captured["config"].global_concurrency == 5
+    assert captured["config"].per_device_concurrency == 2
+
+
+def test_hermes_command_reads_concurrency_from_env(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeAdapter:
+        def __init__(self, config, *, message_handler):
+            captured["config"] = config
+            captured["message_handler"] = message_handler
+
+    async def fake_run_forever(adapter, *, ready_file=None):
+        captured["adapter"] = adapter
+        captured["ready_file"] = ready_file
+
+    monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
+    monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GLOBAL_CONCURRENCY", "6")
+    monkeypatch.setenv("R1_HERMES_PER_DEVICE_CONCURRENCY", "3")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "hermes",
+            "--state-dir",
+            str(tmp_path),
+        ],
+    )
+
+    cli.main()
+
+    assert captured["config"].global_concurrency == 6
+    assert captured["config"].per_device_concurrency == 3
+    assert isinstance(captured["message_handler"], cli.HermesCliRunner)
+
+
+def test_server_command_reports_invalid_concurrency_without_traceback(monkeypatch, tmp_path):
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "serve",
+            "--state-dir",
+            str(tmp_path),
+            "--global-concurrency",
+            "0",
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="global_concurrency must be at least 1"):
+        cli.main()

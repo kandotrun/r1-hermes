@@ -1,3 +1,4 @@
+import asyncio
 import json
 import stat
 from pathlib import Path
@@ -28,6 +29,34 @@ class RaisingHermesSink:
     async def __call__(self, text: str, *, device_id: str, session_key: str) -> str:
         self.messages.append({"text": text, "device_id": device_id, "session_key": session_key})
         raise self.exc
+
+
+class BlockingHermesSink:
+    def __init__(self):
+        self.messages = []
+        self.release = asyncio.Event()
+        self._started = asyncio.Condition()
+
+    async def __call__(self, text: str, *, device_id: str, session_key: str) -> str:
+        async with self._started:
+            self.messages.append(
+                {"text": text, "device_id": device_id, "session_key": session_key}
+            )
+            self._started.notify_all()
+        await self.release.wait()
+        return f"released: {text}"
+
+    async def wait_for_calls(self, count: int) -> None:
+        async with self._started:
+            await self._started.wait_for(lambda: len(self.messages) >= count)
+
+
+class FakeWebSocket:
+    def __init__(self):
+        self.frames = []
+
+    async def send_json(self, frame):
+        self.frames.append(frame)
 
 
 @pytest_asyncio.fixture
@@ -96,6 +125,40 @@ def fixture_with_gateway_token(frame: dict):
     return json.loads(
         serialized.replace("DUMMY_GATEWAY_TOKEN_DO_NOT_USE", "gateway-token-for-tests")
     )
+
+
+async def authenticated_ws(base_url: str, *, device_id: str):
+    session, ws = await ws_connect(base_url)
+    await ws.send_json(
+        {
+            "type": "req",
+            "id": f"connect-{device_id}",
+            "method": "connect",
+            "params": {
+                "auth": {"token": "gateway-token-for-tests"},
+                "device": {"id": device_id},
+            },
+        }
+    )
+    assert (await ws.receive_json())["ok"] is True
+    return session, ws
+
+
+async def send_chat(ws, *, rid: str, message: str, session_key: str = "main") -> None:
+    await ws.send_json(chat_frame(rid=rid, message=message, session_key=session_key))
+
+
+def chat_frame(*, rid: str, message: str, session_key: str = "main") -> dict:
+    return {
+        "type": "req",
+        "id": rid,
+        "method": "chat.send",
+        "params": {
+            "message": message,
+            "sessionKey": session_key,
+            "idempotencyKey": f"run-{rid}",
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -805,6 +868,217 @@ async def test_rate_limit_rejects_excess_messages(running_adapter):
         await session.close()
 
 
+@pytest.mark.asyncio
+async def test_global_concurrency_rejects_excess_runs_across_devices_without_running_handler(
+    unused_tcp_port,
+    tmp_path,
+):
+    sink = BlockingHermesSink()
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            max_message_chars=128,
+            per_device_concurrency=1,
+            global_concurrency=2,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    await adapter.start()
+    connections = []
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        for device_id in ("r1-global-a", "r1-global-b", "r1-global-c"):
+            connections.append(await authenticated_ws(base_url, device_id=device_id))
+
+        for index, (_session, ws) in enumerate(connections[:2]):
+            await send_chat(ws, rid=f"chat-{index}", message=f"hello {index}")
+            ack = await ws.receive_json()
+            started = await ws.receive_json()
+            assert ack["ok"] is True
+            assert started["payload"]["state"] == "started"
+
+        await sink.wait_for_calls(2)
+
+        await send_chat(connections[2][1], rid="chat-over", message="should not start")
+        busy = await connections[2][1].receive_json()
+        serialized = json.dumps(busy)
+
+        assert busy["ok"] is False
+        assert busy["error"] == {"code": "BUSY", "message": "gateway is busy"}
+        assert len(sink.messages) == 2
+        assert "should not start" not in serialized
+        assert "gateway-token-for-tests" not in serialized
+
+        sink.release.set()
+        for _session, ws in connections[:2]:
+            final = await ws.receive_json()
+            assert final["payload"]["state"] == "final"
+    finally:
+        sink.release.set()
+        for session, ws in connections:
+            await ws.close()
+            await session.close()
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_per_device_concurrency_still_applies_when_global_capacity_remains(
+    unused_tcp_port,
+    tmp_path,
+):
+    sink = BlockingHermesSink()
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            max_message_chars=128,
+            per_device_concurrency=1,
+            global_concurrency=3,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    await adapter.start()
+    sessions = []
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        first_session, first_ws = await authenticated_ws(base_url, device_id="r1-one-device")
+        sessions.append((first_session, first_ws))
+        second_session, second_ws = await authenticated_ws(base_url, device_id="r1-one-device")
+        sessions.append((second_session, second_ws))
+
+        await send_chat(first_ws, rid="chat-active", message="active")
+        assert (await first_ws.receive_json())["ok"] is True
+        assert (await first_ws.receive_json())["payload"]["state"] == "started"
+        await sink.wait_for_calls(1)
+
+        await send_chat(second_ws, rid="chat-same-device", message="same device over limit")
+        busy = await second_ws.receive_json()
+
+        assert busy["ok"] is False
+        assert busy["error"] == {"code": "BUSY", "message": "gateway is busy"}
+        assert sink.messages == [
+            {"text": "active", "device_id": "r1-one-device", "session_key": "main"}
+        ]
+
+        sink.release.set()
+        final = await first_ws.receive_json()
+        assert final["payload"]["state"] == "final"
+    finally:
+        sink.release.set()
+        for session, ws in sessions:
+            await ws.close()
+            await session.close()
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_global_inflight_counter_is_released_after_timeout_error(
+    unused_tcp_port,
+    tmp_path,
+):
+    sink = RaisingHermesSink(TimeoutError("DUMMY_SECRET_TOKEN_DO_NOT_USE timeout details"))
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            max_message_chars=128,
+            per_device_concurrency=1,
+            global_concurrency=1,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    await adapter.start()
+    sessions = []
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        first_session, first_ws = await authenticated_ws(base_url, device_id="r1-timeout-a")
+        sessions.append((first_session, first_ws))
+        await send_chat(first_ws, rid="chat-timeout", message="trigger timeout")
+        assert (await first_ws.receive_json())["ok"] is True
+        assert (await first_ws.receive_json())["payload"]["state"] == "started"
+        timeout_event = await first_ws.receive_json()
+        assert timeout_event["payload"]["state"] == "error"
+        assert timeout_event["payload"]["error"] == {
+            "code": "CHAT_RUN_TIMEOUT",
+            "message": "chat run timed out",
+        }
+
+        adapter.message_handler = FakeHermesSink()
+        second_session, second_ws = await authenticated_ws(base_url, device_id="r1-timeout-b")
+        sessions.append((second_session, second_ws))
+        await send_chat(second_ws, rid="chat-after-timeout", message="after timeout")
+        assert (await second_ws.receive_json())["ok"] is True
+        assert (await second_ws.receive_json())["payload"]["state"] == "started"
+        final = await second_ws.receive_json()
+
+        assert final["payload"]["state"] == "final"
+        assert final["payload"]["message"]["content"][0]["text"] == "echo: after timeout"
+        assert len(sink.messages) == 1
+    finally:
+        for session, ws in sessions:
+            await ws.close()
+            await session.close()
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_inflight_counters_are_released_when_handler_task_is_cancelled(tmp_path):
+    sink = BlockingHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            per_device_concurrency=1,
+            global_concurrency=1,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    first_ws = FakeWebSocket()
+    task = asyncio.create_task(
+        adapter._handle_chat_send(
+            first_ws,
+            "chat-cancelled",
+            chat_frame(rid="chat-cancelled", message="will be cancelled"),
+            "r1-cancelled",
+        )
+    )
+    await sink.wait_for_calls(1)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    adapter.message_handler = FakeHermesSink()
+    second_ws = FakeWebSocket()
+    await adapter._handle_chat_send(
+        second_ws,
+        "chat-after-cancel",
+        chat_frame(rid="chat-after-cancel", message="after cancel"),
+        "r1-after-cancel",
+    )
+
+    assert second_ws.frames[0]["ok"] is True
+    assert second_ws.frames[1]["payload"]["state"] == "started"
+    assert second_ws.frames[2]["payload"]["state"] == "final"
+    assert second_ws.frames[2]["payload"]["message"]["content"][0]["text"] == (
+        "echo: after cancel"
+    )
+
+
 def test_pairing_payload_is_explicitly_secret():
     from r1_hermes.qr import build_pairing_payload
 
@@ -818,6 +1092,29 @@ def test_pairing_payload_is_explicitly_secret():
         "token": "secret",
         "protocol": "ws",
     }
+
+
+def test_config_from_env_reads_global_concurrency(monkeypatch, tmp_path):
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-token-for-tests")
+    monkeypatch.setenv("R1_HERMES_GLOBAL_CONCURRENCY", "4")
+    monkeypatch.setenv("R1_HERMES_PER_DEVICE_CONCURRENCY", "2")
+
+    config = R1HermesConfig.from_env(state_dir=tmp_path)
+
+    assert config.global_concurrency == 4
+    assert config.per_device_concurrency == 2
+
+
+def test_config_rejects_invalid_concurrency(tmp_path):
+    with pytest.raises(ValueError, match="global_concurrency"):
+        R1HermesAdapter(
+            R1HermesConfig(
+                gateway_token="gateway-token-for-tests",
+                state_dir=tmp_path,
+                global_concurrency=0,
+            ),
+            message_handler=FakeHermesSink(),
+        )
 
 
 def test_device_state_permissions_are_owner_only(tmp_path):

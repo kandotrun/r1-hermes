@@ -7,7 +7,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from .adapter import DeviceState, R1HermesAdapter, R1HermesConfig
+from .adapter import DEFAULT_GLOBAL_CONCURRENCY, DeviceState, R1HermesAdapter, R1HermesConfig
 from .hermes_runner import HermesCliRunner
 from .qr import build_pairing_payload, write_qr_png
 from .r1_client import R1ProbeClient
@@ -25,6 +25,20 @@ def add_server_args(parser: argparse.ArgumentParser) -> None:
         "--ready-file",
         default="",
         help="Write this file after the gateway starts; useful for smoke tests and supervisors",
+    )
+    parser.add_argument(
+        "--global-concurrency",
+        type=int,
+        default=int(
+            os.environ.get("R1_HERMES_GLOBAL_CONCURRENCY", str(DEFAULT_GLOBAL_CONCURRENCY))
+        ),
+        help="Maximum total authenticated chat runs allowed at once across all devices",
+    )
+    parser.add_argument(
+        "--per-device-concurrency",
+        type=int,
+        default=int(os.environ.get("R1_HERMES_PER_DEVICE_CONCURRENCY", "1")),
+        help="Maximum authenticated chat runs allowed at once for one device",
     )
 
 
@@ -101,11 +115,16 @@ def main() -> None:
         token = os.environ.get("R1_HERMES_GATEWAY_TOKEN", "")
         if not token:
             raise SystemExit("R1_HERMES_GATEWAY_TOKEN is required")
-        config = replace(
-            R1HermesConfig.from_env(state_dir=Path(args.state_dir)),
-            host=args.host,
-            port=args.port,
-        )
+        try:
+            config = replace(
+                R1HermesConfig.from_env(state_dir=Path(args.state_dir)),
+                host=args.host,
+                port=args.port,
+                per_device_concurrency=args.per_device_concurrency,
+                global_concurrency=args.global_concurrency,
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         if args.command == "serve":
             message_handler = _demo_handler
         else:
@@ -115,7 +134,10 @@ def main() -> None:
                 toolsets=args.toolsets or None,
                 continue_sessions=not args.no_continue,
             )
-        adapter = R1HermesAdapter(config, message_handler=message_handler)
+        try:
+            adapter = R1HermesAdapter(config, message_handler=message_handler)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         asyncio.run(
             _run_forever(adapter, ready_file=Path(args.ready_file) if args.ready_file else None)
         )

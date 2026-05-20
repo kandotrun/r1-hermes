@@ -25,6 +25,7 @@ from .payloads import (
 
 DEFAULT_PORT = 18789
 DEFAULT_HOST = "127.0.0.1"
+DEFAULT_GLOBAL_CONCURRENCY = 2
 STATE_FILE = "devices.json"
 TOKEN_BYTES = 32
 CONNECT_METHODS = {"connect", "gateway.connect"}
@@ -44,6 +45,7 @@ class R1HermesConfig:
     port: int = DEFAULT_PORT
     max_message_chars: int = 4_000
     per_device_concurrency: int = 1
+    global_concurrency: int = DEFAULT_GLOBAL_CONCURRENCY
     rate_limit_messages: int = 12
     rate_limit_window_seconds: int = 60
     unauthenticated_timeout_seconds: int = 30
@@ -64,6 +66,9 @@ class R1HermesConfig:
             port=int(os.environ.get("R1_HERMES_PORT", str(DEFAULT_PORT))),
             max_message_chars=int(os.environ.get("R1_HERMES_MAX_MESSAGE_CHARS", "4000")),
             per_device_concurrency=int(os.environ.get("R1_HERMES_PER_DEVICE_CONCURRENCY", "1")),
+            global_concurrency=int(
+                os.environ.get("R1_HERMES_GLOBAL_CONCURRENCY", str(DEFAULT_GLOBAL_CONCURRENCY))
+            ),
             rate_limit_messages=int(os.environ.get("R1_HERMES_RATE_LIMIT_MESSAGES", "12")),
             rate_limit_window_seconds=int(
                 os.environ.get("R1_HERMES_RATE_LIMIT_WINDOW_SECONDS", "60")
@@ -287,6 +292,7 @@ class R1HermesAdapter:
         if not config.gateway_token:
             raise ValueError("gateway_token is required")
         self.config = config
+        _validate_config(config)
         self.message_handler = message_handler
         self.state = DeviceState(config.state_dir)
         self._runner: web.AppRunner | None = None
@@ -302,6 +308,7 @@ class R1HermesAdapter:
             cooldown_seconds=config.unauthenticated_cooldown_seconds,
         )
         self._inflight_by_device: dict[str, int] = defaultdict(int)
+        self._global_inflight = 0
         self._inflight_lock = asyncio.Lock()
 
     async def start(self) -> None:
@@ -542,11 +549,18 @@ class R1HermesAdapter:
             await _send_error(ws, rid, "RATE_LIMITED", "too many messages")
             return
 
+        busy = False
         async with self._inflight_lock:
-            if self._inflight_by_device[device_id] >= self.config.per_device_concurrency:
-                await _send_error(ws, rid, "BUSY", "device has too many in-flight runs")
-                return
-            self._inflight_by_device[device_id] += 1
+            if self._global_inflight >= self.config.global_concurrency:
+                busy = True
+            elif self._inflight_by_device[device_id] >= self.config.per_device_concurrency:
+                busy = True
+            else:
+                self._inflight_by_device[device_id] += 1
+                self._global_inflight += 1
+        if busy:
+            await _send_error(ws, rid, "BUSY", "gateway is busy")
+            return
 
         run_id = str(chat_request.idempotency_key or rid or secrets.token_hex(8))
         session_key = chat_request.session_key
@@ -589,6 +603,9 @@ class R1HermesAdapter:
                 self._inflight_by_device[device_id] -= 1
                 if self._inflight_by_device[device_id] <= 0:
                     self._inflight_by_device.pop(device_id, None)
+                self._global_inflight -= 1
+                if self._global_inflight < 0:  # pragma: no cover - defensive invariant guard
+                    self._global_inflight = 0
 
         if error is not None:
             await ws.send_json(
@@ -627,6 +644,21 @@ class R1HermesAdapter:
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _validate_config(config: R1HermesConfig) -> None:
+    if config.max_message_chars < 1:
+        raise ValueError("max_message_chars must be at least 1")
+    if config.per_device_concurrency < 1:
+        raise ValueError("per_device_concurrency must be at least 1")
+    if config.global_concurrency < 1:
+        raise ValueError("global_concurrency must be at least 1")
+    if config.rate_limit_messages < 1:
+        raise ValueError("rate_limit_messages must be at least 1")
+    if config.rate_limit_window_seconds < 1:
+        raise ValueError("rate_limit_window_seconds must be at least 1")
+    if config.unauthenticated_timeout_seconds < 1:
+        raise ValueError("unauthenticated_timeout_seconds must be at least 1")
 
 
 def _now_ms() -> int:
