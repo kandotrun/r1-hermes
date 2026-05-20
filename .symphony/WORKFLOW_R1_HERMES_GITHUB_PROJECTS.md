@@ -20,10 +20,10 @@ hooks:
     git config user.name "kandotrun"
     git config user.email "79746996+kandotrun@users.noreply.github.com"
 agent:
-  max_concurrent_agents: 3
+  max_concurrent_agents: 6
   max_turns: 60
   max_concurrent_agents_by_state:
-    Todo: 3
+    Todo: 6
 codex:
   command: codex -c 'model_provider="tsuqrea_omniroute"' -c 'model="codex/gpt-5.5"' -c 'model_reasoning_effort="xhigh"' -c 'model_verbosity="high"' -c 'approval_policy="never"' -c 'sandbox_mode="danger-full-access"' app-server
   approval_policy: never
