@@ -10,6 +10,8 @@ For supported Python versions and disclosure routing, see [`../README.md`](../RE
 - The WebSocket endpoint is the outer trust boundary.
 - The gateway token and issued device tokens are bearer secrets.
 - Hermes Agent/tool execution is the protected inner boundary.
+- The default `r1-hermes hermes` runtime is a subprocess bridge; the prototype native adapter keeps
+  the same WebSocket/auth boundary before handing text to any Gateway-style message handler.
 
 ## Non-negotiable rules
 
@@ -35,6 +37,20 @@ Do not expose raw `ws://0.0.0.0:18789` to the public Internet.
 For persistent deployment, use the systemd user-service template in
 [`docs/systemd-user-service.md`](systemd-user-service.md). Keep `R1_HERMES_GATEWAY_TOKEN` in the
 env file only, verify the `--ready-file`, and run `r1-hermes probe` before pairing a device.
+
+## Hermes execution boundary
+
+In standalone mode, `r1-hermes` starts Hermes with `asyncio.create_subprocess_exec` and an argument
+vector, not through a shell. R1 message text is passed as the `--query` argument only after
+successful `connect`, length/rate/concurrency checks, and payload normalization. Gateway tokens,
+device tokens, QR payloads, and raw auth headers are never needed by the Hermes subprocess and must
+not be added to command-line arguments, environment logging, or error responses.
+
+The native Gateway prototype in `src/r1_hermes/native_gateway.py` preserves the same preconditions:
+it converts only authenticated `chat.send` text into a gateway-style message event, excludes message
+text from event `repr()`, stores no bearer token in metadata, and makes `send_text()` a no-op when
+there is no active authenticated WebSocket for the target device/session. A future Hermes-core
+adapter or plugin must retain these properties before it can replace the standalone bridge.
 
 ## Pairing flow
 

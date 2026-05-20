@@ -227,86 +227,154 @@ class R1HermesAdapter:
             }
         )
 
-        async for msg in ws:
-            if msg.type != WSMsgType.TEXT:
-                continue
-            if (
-                not authenticated
-                and time.monotonic() - session_started > self.config.unauthenticated_timeout_seconds
-            ):
-                await _send_error(ws, None, "UNAUTHENTICATED", "connect timeout")
-                await ws.close(code=1008, message=b"connect timeout")
-                break
-            try:
-                frame = json.loads(msg.data)
-            except json.JSONDecodeError:
-                await _send_error(ws, None, "BAD_JSON", "invalid JSON")
-                continue
-            if not isinstance(frame, dict):
-                await _send_error(ws, None, "BAD_REQUEST", "request frame must be an object")
-                continue
-
-            method = frame.get("method")
-            rid = frame.get("id")
-            if frame.get("type") != "req":
-                await _send_error(ws, rid, "BAD_REQUEST", "expected req frame")
-                continue
-            if not isinstance(method, str) or not method.strip():
-                await _send_error(ws, rid, "BAD_REQUEST", "method is required")
-                continue
-
-            if method in CONNECT_METHODS:
-                try:
-                    connect_request = parse_connect_params(request_params(frame))
-                except PayloadParseError as exc:
-                    await _send_error(ws, rid, exc.code, exc.message)
-                    continue
-
-                ok, device_id_or_error, device_token = self._authenticate_connect(
-                    connect_request.auth_token,
-                    device_id=connect_request.device_id,
-                    display_name=connect_request.display_name,
+        try:
+            async for msg in ws:
+                next_device_id, authenticated = await self._handle_ws_message(
+                    ws,
+                    msg,
+                    authenticated=authenticated,
+                    device_id=device_id,
+                    session_started=session_started,
                 )
-                if not ok:
-                    await _send_error(ws, rid, "UNAUTHORIZED", device_id_or_error)
-                    await ws.close(code=1008, message=b"unauthorized")
+                device_id = next_device_id or device_id
+                if ws.closed:
                     break
-                device_id = device_id_or_error
-                authenticated = True
-                await ws.send_json(_hello_response(rid, device_token))
-                if method == "gateway.connect":
-                    for event in GATEWAY_CONNECT_ACK_EVENTS:
-                        await ws.send_json(_connect_ack_event(event, device_id=device_id))
-                continue
-
-            if not authenticated:
-                await _send_error(ws, rid, "UNAUTHENTICATED", "connect required before requests")
-                continue
-
-            if method in {"health", "gateway.health"}:
-                await ws.send_json({"type": "res", "id": rid, "ok": True, "payload": {"ok": True}})
-            elif method in {"system-presence", "tools.catalog", "tools.effective"}:
-                await ws.send_json({"type": "res", "id": rid, "ok": True, "payload": {}})
-            elif method == "chat.history":
-                try:
-                    params = request_params(frame)
-                except PayloadParseError as exc:
-                    await _send_error(ws, rid, exc.code, exc.message)
-                    continue
-                await ws.send_json(
-                    {
-                        "type": "res",
-                        "id": rid,
-                        "ok": True,
-                        "payload": {"sessionKey": params.get("sessionKey", "main"), "messages": []},
-                    }
-                )
-            elif method == "chat.send":
-                await self._handle_chat_send(ws, rid, frame, device_id)
-            else:
-                await _send_error(ws, rid, "UNKNOWN_METHOD", "unsupported method")
+        finally:
+            if authenticated and device_id:
+                await self._on_ws_closed(ws, device_id=device_id)
 
         return ws
+
+    async def _handle_ws_message(
+        self,
+        ws: web.WebSocketResponse,
+        msg: Any,
+        *,
+        authenticated: bool,
+        device_id: str,
+        session_started: float,
+    ) -> tuple[str, bool]:
+        if msg.type != WSMsgType.TEXT:
+            return device_id, authenticated
+        if (
+            not authenticated
+            and time.monotonic() - session_started > self.config.unauthenticated_timeout_seconds
+        ):
+            await _send_error(ws, None, "UNAUTHENTICATED", "connect timeout")
+            await ws.close(code=1008, message=b"connect timeout")
+            return device_id, authenticated
+
+        try:
+            frame = json.loads(msg.data)
+        except json.JSONDecodeError:
+            await _send_error(ws, None, "BAD_JSON", "invalid JSON")
+            return device_id, authenticated
+        if not isinstance(frame, dict):
+            await _send_error(ws, None, "BAD_REQUEST", "request frame must be an object")
+            return device_id, authenticated
+
+        method = frame.get("method")
+        rid = frame.get("id")
+        if frame.get("type") != "req":
+            await _send_error(ws, rid, "BAD_REQUEST", "expected req frame")
+            return device_id, authenticated
+        if not isinstance(method, str) or not method.strip():
+            await _send_error(ws, rid, "BAD_REQUEST", "method is required")
+            return device_id, authenticated
+
+        if method in CONNECT_METHODS:
+            if authenticated:
+                await _send_error(
+                    ws,
+                    rid,
+                    "ALREADY_CONNECTED",
+                    "connect must be done before authentication; reconnect required",
+                )
+                return device_id, authenticated
+            next_device_id, next_authenticated = await self._handle_connect(ws, rid, frame)
+            return next_device_id, next_authenticated
+        if not authenticated:
+            await _send_error(ws, rid, "UNAUTHENTICATED", "connect required before requests")
+            return device_id, authenticated
+        await self._handle_authenticated_request(ws, rid, method, frame, device_id)
+        return device_id, authenticated
+
+    async def _handle_connect(
+        self, ws: web.WebSocketResponse, rid: Any, frame: dict[str, Any]
+    ) -> tuple[str, bool]:
+        try:
+            connect_request = parse_connect_params(request_params(frame))
+        except PayloadParseError as exc:
+            await _send_error(ws, rid, exc.code, exc.message)
+            return "", False
+
+        ok, device_id_or_error, device_token = self._authenticate_connect(
+            connect_request.auth_token,
+            device_id=connect_request.device_id,
+            display_name=connect_request.display_name,
+        )
+        if not ok:
+            await _send_error(ws, rid, "UNAUTHORIZED", device_id_or_error)
+            await ws.close(code=1008, message=b"unauthorized")
+            return "", False
+        await ws.send_json(_hello_response(rid, device_token))
+        if frame.get("method") == "gateway.connect":
+            for event in GATEWAY_CONNECT_ACK_EVENTS:
+                await ws.send_json(_connect_ack_event(event, device_id=device_id_or_error))
+        await self._on_ws_authenticated(ws, device_id=device_id_or_error)
+        return device_id_or_error, True
+
+    async def _handle_authenticated_request(
+        self,
+        ws: web.WebSocketResponse,
+        rid: Any,
+        method: str,
+        frame: dict[str, Any],
+        device_id: str,
+    ) -> None:
+        if method in {"health", "gateway.health"}:
+            await ws.send_json(
+                {"type": "res", "id": rid, "ok": True, "payload": {"ok": True}}
+            )
+        elif method in {"system-presence", "tools.catalog", "tools.effective"}:
+            await ws.send_json({"type": "res", "id": rid, "ok": True, "payload": {}})
+        elif method == "chat.history":
+            await self._handle_chat_history(ws, rid, frame)
+        elif method == "chat.send":
+            await self._handle_chat_send(ws, rid, frame, device_id)
+        else:
+            await _send_error(ws, rid, "UNKNOWN_METHOD", "unsupported method")
+
+    async def _handle_chat_history(
+        self, ws: web.WebSocketResponse, rid: Any, frame: dict[str, Any]
+    ) -> None:
+        try:
+            params = request_params(frame)
+        except PayloadParseError as exc:
+            await _send_error(ws, rid, exc.code, exc.message)
+            return
+        await ws.send_json(
+            {
+                "type": "res",
+                "id": rid,
+                "ok": True,
+                "payload": {
+                    "sessionKey": params.get("sessionKey", "main"),
+                    "messages": [],
+                },
+            }
+        )
+
+    async def _on_ws_authenticated(self, ws: web.WebSocketResponse, *, device_id: str) -> None:
+        del ws, device_id
+
+    async def _on_ws_closed(self, ws: web.WebSocketResponse, *, device_id: str) -> None:
+        del ws, device_id
+
+    async def _on_chat_session_active(
+        self, ws: web.WebSocketResponse, *, device_id: str, session_key: str
+    ) -> None:
+        del ws, device_id, session_key
 
     def _authenticate_connect(
         self, supplied: str, *, device_id: str, display_name: str
@@ -347,30 +415,30 @@ class R1HermesAdapter:
 
         run_id = str(chat_request.idempotency_key or rid or secrets.token_hex(8))
         session_key = chat_request.session_key
-        await ws.send_json(
-            {
-                "type": "res",
-                "id": rid,
-                "ok": True,
-                "payload": {"runId": run_id, "status": "started"},
-            }
-        )
-        await ws.send_json(
-            {
-                "type": "event",
-                "event": "chat",
-                "payload": {
-                    "runId": run_id,
-                    "sessionKey": session_key,
-                    "seq": 1,
-                    "state": "started",
-                },
-            }
-        )
-
         response = ""
         error: ChatRunError | None = None
         try:
+            await self._on_chat_session_active(ws, device_id=device_id, session_key=session_key)
+            await ws.send_json(
+                {
+                    "type": "res",
+                    "id": rid,
+                    "ok": True,
+                    "payload": {"runId": run_id, "status": "started"},
+                }
+            )
+            await ws.send_json(
+                {
+                    "type": "event",
+                    "event": "chat",
+                    "payload": {
+                        "runId": run_id,
+                        "sessionKey": session_key,
+                        "seq": 1,
+                        "state": "started",
+                    },
+                }
+            )
             try:
                 response = await self.message_handler(
                     message_text, device_id=device_id, session_key=session_key
