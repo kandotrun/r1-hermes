@@ -108,6 +108,29 @@ def test_chat_variant_fixtures_are_normalized_without_repr_secret_leakage(
 
 
 @pytest.mark.parametrize(
+    ("fixture_name", "dummy_media"),
+    [
+        ("chat_send_mixed_text_audio_content.json", "DUMMY_BINARY_DATA_OMITTED"),
+        ("chat_send_media_only_image_content.json", "DUMMY_BINARY_DATA_OMITTED"),
+    ],
+)
+def test_chat_media_fixtures_raise_safe_unsupported_media_without_leaking_payload(
+    fixture_name,
+    dummy_media,
+):
+    frame = load_fixture(fixture_name)
+
+    with pytest.raises(PayloadParseError) as exc_info:
+        parse_chat_send_params(request_params(frame))
+
+    assert exc_info.value.code == "UNSUPPORTED_MEDIA"
+    assert str(exc_info.value) == "unsupported media content"
+    assert dummy_media not in str(exc_info.value)
+    assert dummy_media not in repr(exc_info.value)
+    assert "DUMMY_DEVICE_TOKEN_DO_NOT_USE" not in repr(exc_info.value)
+
+
+@pytest.mark.parametrize(
     ("params", "match"),
     [
         ({"authToken": "DUMMY_GATEWAY_TOKEN_DO_NOT_USE"}, "device.id is required"),
@@ -123,12 +146,31 @@ def test_connect_required_fields_raise_explicit_errors(params, match):
     "params",
     [
         {"message": ""},
-        {"message": {"content": [{"type": "input_audio", "data": "ignored"}]}},
     ],
 )
 def test_chat_message_is_required(params):
     with pytest.raises(PayloadParseError, match="message is required"):
         parse_chat_send_params(params)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"message": {"content": [{"type": "input_audio", "data": "DUMMY_AUDIO"}]}},
+        {"message": {"content": [{"type": "input_image", "data": "DUMMY_IMAGE"}]}},
+        {"message": {"content": [{"type": "text", "text": "hello", "data": "DUMMY_AUDIO"}]}},
+        {"content": [{"type": "image", "data": "DUMMY_IMAGE"}]},
+        {"content": [{"text": "hello"}]},
+        {"content": b"DUMMY_BINARY_AUDIO"},
+    ],
+)
+def test_chat_media_content_raises_explicit_unsupported_media(params):
+    with pytest.raises(PayloadParseError) as exc_info:
+        parse_chat_send_params(params)
+
+    assert exc_info.value.code == "UNSUPPORTED_MEDIA"
+    assert str(exc_info.value) == "unsupported media content"
+    assert "DUMMY" not in str(exc_info.value)
 
 
 def test_request_params_rejects_malformed_payload_shape_without_echoing_secret():
@@ -147,13 +189,12 @@ def test_request_params_rejects_malformed_payload_shape_without_echoing_secret()
     assert "DUMMY_DEVICE_TOKEN_DO_NOT_USE" not in str(exc_info.value)
 
 
-def test_nested_content_message_text_is_extracted_from_text_parts_only():
+def test_nested_content_message_text_is_extracted_from_text_parts():
     request = parse_chat_send_params(
         {
             "message": {
                 "content": [
                     {"type": "text", "text": "hello"},
-                    {"type": "image", "data": "ignored"},
                     {"type": "text", "text": " world"},
                 ]
             },
@@ -165,3 +206,36 @@ def test_nested_content_message_text_is_extracted_from_text_parts_only():
     assert request.message == "hello world"
     assert request.session_key == "nested-session"
     assert request.idempotency_key == "nested-run"
+
+
+def test_single_mapping_text_content_part_is_extracted():
+    request = parse_chat_send_params(
+        {
+            "message": {"content": {"type": "input_text", "text": "hello single part"}},
+            "sessionKey": "single-part-session",
+            "runId": "single-part-run",
+        }
+    )
+
+    assert request.message == "hello single part"
+    assert request.session_key == "single-part-session"
+    assert request.idempotency_key == "single-part-run"
+
+
+def test_mixed_text_and_media_content_is_not_silently_dropped():
+    with pytest.raises(PayloadParseError) as exc_info:
+        parse_chat_send_params(
+            {
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "hello"},
+                        {"type": "image", "data": "DUMMY_IMAGE"},
+                    ]
+                },
+                "session": {"key": "nested-session"},
+                "requestId": "nested-run",
+            }
+        )
+
+    assert exc_info.value.code == "UNSUPPORTED_MEDIA"
+    assert "DUMMY_IMAGE" not in str(exc_info.value)

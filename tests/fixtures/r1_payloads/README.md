@@ -14,5 +14,7 @@ Rules for adding captures:
 - Prefer one small JSON file per frame shape so parser regressions are easy to review.
 
 Current fixtures cover the official helper QR payload shape, the standard helper `connect` shape,
-OpenClaw/community `gateway.connect` variants, `chat.send` alias parsing, and `chat.history`
-session-key alias parsing. These are sanitized compatibility samples, not raw captures.
+OpenClaw/community `gateway.connect` variants, `chat.send` alias parsing, `chat.history`
+session-key alias parsing, text content parts, and unsupported media content parts. These are
+sanitized compatibility samples, not raw captures; media fixtures use dummy placeholder strings
+only.

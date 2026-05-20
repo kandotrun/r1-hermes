@@ -14,6 +14,40 @@ class PayloadParseError(ValueError):
         self.message = message
 
 
+UNSUPPORTED_MEDIA_CODE = "UNSUPPORTED_MEDIA"
+UNSUPPORTED_MEDIA_MESSAGE = "unsupported media content"
+TEXT_CONTENT_TYPES = {"text", "input_text"}
+MEDIA_CONTENT_TYPES = {
+    "attachment",
+    "audio",
+    "file",
+    "image",
+    "input_audio",
+    "input_file",
+    "input_image",
+    "input_video",
+    "media",
+    "video",
+}
+MEDIA_PAYLOAD_KEYS = {
+    "audio",
+    "audio_url",
+    "b64_json",
+    "base64",
+    "blob",
+    "bytes",
+    "data",
+    "file",
+    "image",
+    "image_url",
+    "media",
+    "mimeType",
+    "mime_type",
+    "uri",
+    "url",
+}
+
+
 @dataclass(frozen=True)
 class ConnectRequest:
     auth_token: str = field(repr=False)
@@ -148,18 +182,26 @@ def _clean_text(value: Any) -> str | None:
 
 
 def _extract_message(data: Mapping[str, Any]) -> str | None:
+    message = data.get("message")
+    nested_content_text = None
+    if isinstance(message, Mapping) and "content" in message:
+        nested_content_text = _content_to_text(message.get("content"))
+
+    top_level_content_text = None
+    if "content" in data:
+        top_level_content_text = _content_to_text(data.get("content"))
+
     direct = _first_text((data, ("message", "text", "prompt", "input")))
     if direct is not None:
         return direct
 
-    message = data.get("message")
     if isinstance(message, Mapping):
         text = _first_text((message, ("text", "body", "prompt", "input")))
         if text is not None:
             return text
-        return _content_to_text(message.get("content"))
+        return nested_content_text
 
-    return _content_to_text(data.get("content"))
+    return top_level_content_text
 
 
 def _extract_session_key(data: Mapping[str, Any]) -> str | None:
@@ -176,17 +218,68 @@ def _extract_session_key(data: Mapping[str, Any]) -> str | None:
 def _content_to_text(content: Any) -> str | None:
     if isinstance(content, str):
         return content.strip() or None
-    if not isinstance(content, Sequence) or isinstance(content, (bytes, bytearray)):
+    if isinstance(content, (bytes, bytearray)):
+        _raise_unsupported_media()
+    if isinstance(content, Mapping):
+        content_type = _content_type(content)
+        if _is_text_content_part(content, content_type):
+            text = content.get("text")
+            return text.strip() if isinstance(text, str) and text.strip() else None
+        if _is_unsupported_content_part(content, content_type):
+            _raise_unsupported_media()
+        return None
+    if not isinstance(content, Sequence):
         return None
 
     parts: list[str] = []
     for item in content:
         if isinstance(item, str):
             parts.append(item)
-        elif isinstance(item, Mapping) and item.get("type") in {"text", "input_text"}:
-            text = item.get("text")
-            if isinstance(text, str):
-                parts.append(text)
+            continue
+        if isinstance(item, (bytes, bytearray)):
+            _raise_unsupported_media()
+        if isinstance(item, Mapping):
+            content_type = _content_type(item)
+            if _is_text_content_part(item, content_type):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                continue
+            if _is_unsupported_content_part(item, content_type):
+                _raise_unsupported_media()
 
     text = "".join(parts).strip()
     return text or None
+
+
+def _content_type(item: Mapping[str, Any]) -> str | None:
+    value = item.get("type")
+    return value.strip().lower() if isinstance(value, str) else None
+
+
+def _is_text_content_part(item: Mapping[str, Any], content_type: str | None = None) -> bool:
+    content_type = content_type if content_type is not None else _content_type(item)
+    return content_type in TEXT_CONTENT_TYPES and not _has_media_payload(item)
+
+
+def _is_unsupported_content_part(
+    item: Mapping[str, Any], content_type: str | None = None
+) -> bool:
+    if _has_media_payload(item):
+        return True
+    content_type = content_type if content_type is not None else _content_type(item)
+    if content_type is not None:
+        if content_type in TEXT_CONTENT_TYPES:
+            return False
+        if content_type in MEDIA_CONTENT_TYPES:
+            return True
+        return True
+    return True
+
+
+def _has_media_payload(item: Mapping[str, Any]) -> bool:
+    return any(key in item for key in MEDIA_PAYLOAD_KEYS)
+
+
+def _raise_unsupported_media() -> None:
+    raise PayloadParseError(UNSUPPORTED_MEDIA_CODE, UNSUPPORTED_MEDIA_MESSAGE)

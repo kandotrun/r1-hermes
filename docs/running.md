@@ -337,6 +337,21 @@ r1-hermes probe \
   --message 'Reply with OK from Hermes'
 ```
 
+### Text-only chat scope
+
+The standalone bridge accepts authenticated text `chat.send` requests only. Plain text fields and
+text content parts such as `{"type":"text","text":"..."}` or `{"type":"input_text",...}`
+are normalized into the Hermes prompt. Audio, image, video, file, attachment, binary, base64, URL,
+and mixed text-plus-media content parts are rejected with the deterministic `UNSUPPORTED_MEDIA`
+response before Hermes is invoked. This fail-closed behavior avoids silently dropping Rabbit R1
+voice/image context and avoids leaking media bytes through errors, audit logs, or probe frame dumps.
+
+Future STT/media support should add an explicit adapter stage before prompt construction: authenticate
+the device, validate media type and size, redact local diagnostics, run the approved speech or media
+processor, then pass only the derived text or safe attachment metadata to Hermes. Do not commit raw
+Rabbit R1 audio/image captures; use sanitized fixtures with dummy placeholder strings when adding
+parser coverage.
+
 ## Audit logs
 
 The gateway emits one-line JSON audit events through the `r1_hermes.audit` logger. These logs are
@@ -414,7 +429,8 @@ needed to reproduce a compatibility gap:
 - the names of acknowledgement events observed after connect, such as `connect.ok` or
   `node.pair.approved`
 - parser-relevant field names and nesting, while removing exact IPs, account identifiers, raw
-  timestamps, audio/image payloads, and unrelated UI state
+  timestamps, audio/image payloads, and unrelated UI state; unsupported-media fixtures may keep
+  dummy placeholders such as `DUMMY_BINARY_DATA_OMITTED` only
 
 Redaction is mandatory before committing or pasting captures anywhere. Replace gateway tokens,
 device tokens, QR secrets, API keys, cookies, bearer headers, and raw auth headers with obvious

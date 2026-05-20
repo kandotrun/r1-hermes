@@ -128,3 +128,58 @@ async def test_sanitized_fixture_flows_replay_without_secret_leakage(replay_gate
     assert DUMMY_DEVICE_TOKEN not in result.serialized_frames
     assert "[REDACTED]" in result.serialized_frames
     assert result.device_token not in result.serialized_chat_frames
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chat_fixture", "dummy_media", "text_prompt"),
+    [
+        (
+            "chat_send_mixed_text_audio_content.json",
+            "DUMMY_BINARY_DATA_OMITTED",
+            "please describe this audio",
+        ),
+        (
+            "chat_send_media_only_image_content.json",
+            "DUMMY_BINARY_DATA_OMITTED",
+            None,
+        ),
+    ],
+)
+async def test_media_fixture_flows_return_unsupported_media_without_secret_leakage(
+    replay_gateway,
+    chat_fixture,
+    dummy_media,
+    text_prompt,
+):
+    url, sink = replay_gateway
+
+    result = await replay_fixture_flow(
+        url=url,
+        fixture_dir=FIXTURE_DIR,
+        flow=FixtureReplayFlow(
+            connect_fixture="connect_official_helper.json",
+            chat_fixture=chat_fixture,
+            expected_device_id="r1-official-helper",
+            expected_message=None,
+            expected_session_key="media-main",
+            expected_run_id="",
+            expected_error_code="UNSUPPORTED_MEDIA",
+            expected_error_message="unsupported media content",
+        ),
+        gateway_token=TEST_GATEWAY_TOKEN,
+    )
+
+    assert result.response_text is None
+    assert result.run_id is None
+    assert result.error_code == "UNSUPPORTED_MEDIA"
+    assert result.error_message == "unsupported media content"
+    assert sink.messages == []
+    assert dummy_media not in repr(result)
+    assert dummy_media not in result.serialized_frames
+    if text_prompt is not None:
+        assert text_prompt not in result.serialized_chat_frames
+    assert TEST_GATEWAY_TOKEN not in result.serialized_frames
+    assert DUMMY_GATEWAY_TOKEN not in result.serialized_frames
+    assert DUMMY_DEVICE_TOKEN not in result.serialized_frames
+    assert result.device_token not in result.serialized_frames

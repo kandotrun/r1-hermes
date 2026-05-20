@@ -109,6 +109,31 @@ def test_validate_sanitized_capture_rejects_raw_auth_values() -> None:
         validate_sanitized_capture(private_capture_frames()[0])
 
 
+def test_validate_sanitized_capture_accepts_unsupported_media_fixture_shape() -> None:
+    validate_sanitized_capture(
+        {
+            "type": "req",
+            "id": "media-frame-001",
+            "method": "chat.send",
+            "params": {
+                "message": {
+                    "content": [
+                        {"type": "input_text", "text": SANITIZED_MESSAGE_TEXT},
+                        {
+                            "type": "input_audio",
+                            "mediaType": "audio/wav",
+                            "data": "DUMMY_BINARY_DATA_OMITTED",
+                        },
+                    ]
+                },
+                "sessionKey": "media-main",
+                "requestId": "media-run-001",
+                "auth": {"deviceToken": DUMMY_DEVICE_TOKEN},
+            },
+        }
+    )
+
+
 @pytest.mark.parametrize(
     "fixture_name",
     sorted(name for name in os.listdir(FIXTURE_DIR) if name.endswith(".json")),

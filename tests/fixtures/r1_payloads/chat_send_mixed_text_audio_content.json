@@ -1,24 +1,25 @@
 {
   "type": "req",
-  "id": "chat-openclaw-ui-001",
+  "id": "chat-mixed-media-001",
   "method": "chat.send",
   "params": {
     "message": {
       "content": [
         {
           "type": "input_text",
-          "text": "hello Hermes"
+          "text": "please describe this audio"
         },
         {
-          "type": "text",
-          "text": " from OpenClaw UI fixture"
+          "type": "input_audio",
+          "mediaType": "audio/wav",
+          "data": "DUMMY_BINARY_DATA_OMITTED"
         }
       ]
     },
     "session": {
-      "key": "openclaw-ui-main"
+      "key": "media-main"
     },
-    "idempotency_key": "openclaw-ui-run-001",
+    "idempotencyKey": "mixed-media-run-001",
     "auth": {
       "deviceToken": "DUMMY_DEVICE_TOKEN_DO_NOT_USE"
     }

@@ -12,11 +12,34 @@ from aiohttp import ClientSession, WSMsgType
 CONNECT_METHODS = {"connect", "gateway.connect"}
 CONNECT_ACK_EVENTS = {"connect.ok", "node.pair.approved"}
 AUTH_SECRET_KEYS = {"token", "authToken", "gatewayToken", "deviceToken", "bearerToken"}
-CONTENT_SECRET_KEYS = {"message", "text", "body", "prompt", "input", "data"}
+CONTENT_SECRET_KEYS = {
+    "message",
+    "text",
+    "body",
+    "prompt",
+    "input",
+    "data",
+    "base64",
+    "b64_json",
+    "bytes",
+    "blob",
+    "audio",
+    "audio_url",
+    "image",
+    "image_url",
+    "media",
+    "url",
+    "uri",
+}
 DEVICE_SECRET_KEYS = {"deviceId", "device_id", "serial", "serialNumber"}
 DEVICE_CONTEXT_KEYS = {"device"}
 REDACTED = "[REDACTED]"
-PUBLIC_DUMMY_SECRET_PREFIXES = ("DUMMY_GATEWAY_TOKEN_", "DUMMY_DEVICE_TOKEN_")
+PUBLIC_DUMMY_SECRET_PREFIXES = (
+    "DUMMY_GATEWAY_TOKEN_",
+    "DUMMY_DEVICE_TOKEN_",
+    "DUMMY_AUDIO_",
+    "DUMMY_IMAGE_",
+)
 
 
 class R1ProbeError(RuntimeError):
