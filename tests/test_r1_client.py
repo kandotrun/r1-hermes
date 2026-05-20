@@ -266,6 +266,33 @@ def test_redact_frame_secrets_removes_known_values_from_nested_strings():
     assert serialized.count("[REDACTED]") >= 2
 
 
+def test_redact_frame_secrets_removes_media_payloads_and_dummy_media_values():
+    redacted = redact_frame_secrets(
+        {
+            "message": {
+                "content": [
+                    {"type": "input_text", "text": "private media prompt"},
+                    {
+                        "type": "input_audio",
+                        "mediaType": "audio/wav",
+                        "data": "DUMMY_BINARY_DATA_OMITTED",
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": "DUMMY_BINARY_DATA_OMITTED",
+                    },
+                ]
+            },
+            "error": {"message": "DUMMY_BINARY_DATA_OMITTED failed"},
+        },
+    )
+
+    serialized = str(redacted)
+    assert "private media prompt" not in serialized
+    assert "DUMMY_BINARY_DATA_OMITTED" not in serialized
+    assert serialized.count("[REDACTED]") >= 3
+
+
 @pytest.mark.asyncio
 async def test_probe_client_rejects_unsupported_connect_method_before_network(running_gateway):
     client = R1ProbeClient(

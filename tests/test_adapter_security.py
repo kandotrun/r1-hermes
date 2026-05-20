@@ -896,6 +896,72 @@ async def test_chat_run_lifecycle_audit_logs_do_not_include_full_message_body(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("fixture_name", "dummy_media"),
+    [
+        ("chat_send_mixed_text_audio_content.json", "DUMMY_BINARY_DATA_OMITTED"),
+        ("chat_send_media_only_image_content.json", "DUMMY_BINARY_DATA_OMITTED"),
+    ],
+)
+async def test_unsupported_media_chat_send_returns_safe_error_without_agent_run_or_leakage(
+    running_adapter,
+    caplog,
+    fixture_name,
+    dummy_media,
+):
+    _adapter, sink, base_url = running_adapter
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-media-reject",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-tests"},
+                    "device": {"id": "r1-media-reject"},
+                },
+            }
+        )
+        hello = await ws.receive_json()
+        device_token = hello["payload"]["auth"]["deviceToken"]
+
+        frame = load_fixture(fixture_name)
+        await ws.send_json(frame)
+        error = await ws.receive_json()
+        serialized_error = json.dumps(error, sort_keys=True)
+        logs = serialized_audit_logs(caplog)
+
+        assert error == {
+            "type": "res",
+            "id": frame["id"],
+            "ok": False,
+            "error": {
+                "code": "UNSUPPORTED_MEDIA",
+                "message": "unsupported media content",
+            },
+        }
+        assert sink.messages == []
+        assert dummy_media not in serialized_error
+        assert dummy_media not in logs
+        assert "please describe this audio" not in serialized_error
+        assert "please describe this audio" not in logs
+        assert "DUMMY_DEVICE_TOKEN_DO_NOT_USE" not in serialized_error
+        assert "DUMMY_DEVICE_TOKEN_DO_NOT_USE" not in logs
+        assert device_token not in serialized_error
+        assert device_token not in logs
+        parser_error = next(
+            event for event in audit_events(caplog) if event["event"] == "chat.parser_error"
+        )
+        assert parser_error["error_code"] == "UNSUPPORTED_MEDIA"
+        assert parser_error["device_id_hash"].startswith("sha256:")
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("fixture_name", "expected_device_id", "expected_ack_events"),
     [
         ("connect_official_helper.json", "r1-official-helper", []),

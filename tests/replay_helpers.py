@@ -11,6 +11,7 @@ from aiohttp import ClientSession
 SECRET_REPLACEMENTS = {
     "DUMMY_GATEWAY_TOKEN_DO_NOT_USE": "[REDACTED]",
     "DUMMY_DEVICE_TOKEN_DO_NOT_USE": "[REDACTED]",
+    "DUMMY_BINARY_DATA_OMITTED": "[REDACTED_MEDIA]",
 }
 
 
@@ -19,19 +20,23 @@ class FixtureReplayFlow:
     connect_fixture: str
     chat_fixture: str
     expected_device_id: str
-    expected_message: str
+    expected_message: str | None
     expected_session_key: str
     expected_run_id: str
     expected_ack_events: tuple[str, ...] = ()
     history_fixture: str | None = None
+    expected_error_code: str | None = None
+    expected_error_message: str | None = None
 
 
 @dataclass(frozen=True)
 class FixtureReplayResult:
-    response_text: str
-    run_id: str
+    response_text: str | None
+    run_id: str | None
     device_token: str = field(repr=False)
     frames: tuple[dict[str, Any], ...]
+    error_code: str | None = None
+    error_message: str | None = None
 
     @property
     def serialized_frames(self) -> str:
@@ -103,6 +108,26 @@ async def replay_fixture_flow(
             await ws.send_json(outbound_chat_frame)
 
             chat_ack = await ws.receive_json()
+            if flow.expected_error_code is not None:
+                frames.append({"phase": "chat_error", "frame": _safe_frame(chat_ack)})
+                assert chat_ack == {
+                    "type": "res",
+                    "id": chat_frame["id"],
+                    "ok": False,
+                    "error": {
+                        "code": flow.expected_error_code,
+                        "message": flow.expected_error_message,
+                    },
+                }
+                return FixtureReplayResult(
+                    response_text=None,
+                    run_id=None,
+                    device_token=device_token,
+                    frames=tuple(frames),
+                    error_code=str(chat_ack["error"]["code"]),
+                    error_message=str(chat_ack["error"]["message"]),
+                )
+
             started = await ws.receive_json()
             final = await ws.receive_json()
             frames.extend(

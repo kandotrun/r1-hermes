@@ -1,0 +1,19 @@
+{
+  "type": "req",
+  "id": "chat-media-only-001",
+  "method": "chat.send",
+  "params": {
+    "content": [
+      {
+        "type": "input_image",
+        "mediaType": "image/png",
+        "data": "DUMMY_BINARY_DATA_OMITTED"
+      }
+    ],
+    "sessionKey": "media-main",
+    "requestId": "media-only-run-001",
+    "auth": {
+      "deviceToken": "DUMMY_DEVICE_TOKEN_DO_NOT_USE"
+    }
+  }
+}

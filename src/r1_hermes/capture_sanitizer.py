@@ -274,11 +274,26 @@ def _validate_chat_request(params: Mapping[str, Any]) -> None:
     try:
         chat = parse_chat_send_params(params)
     except PayloadParseError as exc:
+        if exc.code == "UNSUPPORTED_MEDIA":
+            _validate_unsupported_media_chat_request(params)
+            return
         raise CaptureSchemaError(exc.message) from exc
     _require_public_text(chat.message, label="chat message")
     _require_public_text(chat.session_key, label="session key")
     if chat.idempotency_key is not None:
         _require_public_text(chat.idempotency_key, label="run id")
+
+
+def _validate_unsupported_media_chat_request(params: Mapping[str, Any]) -> None:
+    try:
+        history = parse_chat_history_params(params)
+    except PayloadParseError as exc:
+        raise CaptureSchemaError(exc.message) from exc
+    _require_public_text(history.session_key, label="session key")
+    for key in RUN_ID_KEYS:
+        run_id = params.get(key)
+        if isinstance(run_id, str):
+            _require_public_text(run_id, label="run id")
 
 
 def _validate_chat_history_request(params: Mapping[str, Any]) -> None:
