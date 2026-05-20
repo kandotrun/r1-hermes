@@ -188,6 +188,33 @@ def test_server_command_reads_unauthenticated_limit_env(monkeypatch, tmp_path):
     assert config.device_token_idle_timeout_seconds == 30
 
 
+def test_server_command_reads_health_privacy_env(monkeypatch, tmp_path):
+    created = []
+
+    class FakeAdapter:
+        def __init__(self, config, *, message_handler):
+            created.append({"config": config, "message_handler": message_handler})
+
+    async def fake_run_forever(adapter, *, ready_file=None):
+        created.append({"adapter": adapter, "ready_file": ready_file})
+
+    monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
+    monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_ALLOW_REMOTE_HEALTH", "1")
+    monkeypatch.setenv("R1_HERMES_HEALTH_DIAGNOSTICS", "1")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["r1-hermes", "serve", "--state-dir", str(tmp_path)],
+    )
+
+    cli.main()
+
+    config = created[0]["config"]
+    assert config.allow_remote_health is True
+    assert config.health_diagnostics is True
+
+
 def test_server_command_rejects_wildcard_bind_without_explicit_opt_in(monkeypatch, tmp_path):
     monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
     monkeypatch.setattr(

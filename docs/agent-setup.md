@@ -184,6 +184,21 @@ print(p.read_text().strip() if p.exists() else 'ready file missing')
 PY
 ```
 
+Optionally verify the privacy-preserving local readiness endpoint:
+
+```bash
+curl --fail --silent http://127.0.0.1:18789/healthz
+```
+
+Expected output:
+
+```json
+{"ok": true}
+```
+
+Do not enable `--allow-remote-health` or `--health-diagnostics` during standard setup. Remote health
+checks and paired-device counts require an explicit human-reviewed monitoring boundary.
+
 Probe the exact advertised WebSocket URL:
 
 ```bash

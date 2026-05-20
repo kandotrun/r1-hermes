@@ -24,6 +24,8 @@ For supported Python versions and disclosure routing, see [`../README.md`](../RE
 6. Unauthenticated handshake limits are enforced by peer IP before authentication.
 7. Authenticated rate limit, length limit, global concurrency limit, and per-device concurrency limit are enforced before Hermes execution.
 8. QR payloads contain secrets and must be shared/retained accordingly.
+9. HTTP health checks expose only minimal readiness by default and stay local-only unless remote
+   health access is explicitly reviewed.
 
 ## Recommended deployment
 
@@ -42,6 +44,12 @@ not expose a raw `ws://0.0.0.0:18789` service to the public Internet.
 For persistent deployment, use the systemd user-service template in
 [`docs/systemd-user-service.md`](systemd-user-service.md). Keep `R1_HERMES_GATEWAY_TOKEN` in the
 env file only, verify the `--ready-file`, and run `r1-hermes probe` before pairing a device.
+
+`/healthz` returns only `{"ok": true}` by default and rejects non-local peers. If an external
+supervisor genuinely needs the endpoint, set `--allow-remote-health` or
+`R1_HERMES_ALLOW_REMOTE_HEALTH=1` only after reviewing the network boundary. Paired-device counts
+are omitted unless `--health-diagnostics` or `R1_HERMES_HEALTH_DIAGNOSTICS=1` is also set; do not
+enable diagnostic counts for public or broadly reachable health probes.
 
 ## Hermes execution boundary
 
