@@ -272,6 +272,11 @@ logs, rollback, localhost, and Tailscale examples.
 
 Read [`docs/security.md`](docs/security.md) before exposing the gateway to a network.
 
+If you are turning a real Rabbit R1/OpenClaw capture into a public compatibility fixture, use
+[`docs/capture-replay.md`](docs/capture-replay.md). Never paste raw captures, QR payloads, auth
+headers, gateway tokens, device tokens, device IDs, or personal prompts into public issues or pull
+requests.
+
 Report suspected vulnerabilities privately. Use GitHub's private vulnerability reporting or
 a draft GitHub Security Advisory when available; otherwise open a minimal issue asking for a
 private maintainer contact without including exploit details, gateway tokens, device tokens,

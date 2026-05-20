@@ -2,11 +2,15 @@
 
 This directory is for sanitized device capture samples used by parser tests.
 
+Use the one-command sanitizer workflow in [`../../../docs/capture-replay.md`](../../../docs/capture-replay.md)
+before committing anything derived from a real device capture.
+
 Rules for adding captures:
 
 - Replace gateway tokens, device tokens, QR secrets, API keys, and raw auth headers with obvious dummy values.
 - Keep only the fields needed to exercise payload shape and alias compatibility.
 - Do not include personal messages, account identifiers, exact network addresses, or full timestamps from a real device.
+- Do not paste raw captures or QR payload JSON into public issues, PRs, chat, logs, or screenshots.
 - Prefer one small JSON file per frame shape so parser regressions are easy to review.
 
 Current fixtures cover the official helper QR payload shape, the standard helper `connect` shape,
