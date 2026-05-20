@@ -5,7 +5,7 @@ import asyncio
 import os
 from pathlib import Path
 
-from .adapter import R1HermesAdapter, R1HermesConfig
+from .adapter import DeviceState, R1HermesAdapter, R1HermesConfig
 from .hermes_runner import HermesCliRunner
 from .qr import build_pairing_payload, write_qr_png
 from .r1_client import R1ProbeClient
@@ -58,6 +58,20 @@ def main() -> None:
     qr.add_argument("--token", default=os.environ.get("R1_HERMES_GATEWAY_TOKEN", ""))
     qr.add_argument("--protocol", choices=["ws", "wss"], default="ws")
     qr.add_argument("--output", required=True)
+    qr.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing QR PNG at --output instead of failing closed",
+    )
+    qr.add_argument(
+        "--print-payload",
+        action="store_true",
+        help="Also print the secret QR payload JSON to stdout",
+    )
+
+    revoke = sub.add_parser("revoke", help="Revoke a paired Rabbit R1 device token")
+    revoke.add_argument("--state-dir", default=str(Path.home() / ".r1-hermes"))
+    revoke.add_argument("--device-id", required=True)
 
     probe = sub.add_parser("probe", help="Send a Rabbit R1-style probe message to a gateway")
     probe.add_argument("--url", required=True, help="WebSocket URL, e.g. ws://100.x.y.z:18789/")
@@ -103,8 +117,10 @@ def main() -> None:
         payload_text = build_pairing_payload(
             hosts=args.hosts, port=args.port, token=args.token, protocol=args.protocol
         )
-        path = write_qr_png(payload_text, Path(args.output))
+        path = write_qr_png(payload_text, Path(args.output), overwrite=args.overwrite)
         print(f"Wrote secret QR PNG: {path}")
+        if args.print_payload:
+            print(payload_text)
     elif args.command == "probe":
         result = asyncio.run(
             R1ProbeClient(
@@ -115,6 +131,11 @@ def main() -> None:
             ).send_message(args.message, session_key=args.session_key)
         )
         print(result.response_text)
+    elif args.command == "revoke":
+        state = DeviceState(Path(args.state_dir))
+        if not state.revoke(args.device_id):
+            raise SystemExit(f"device not found: {args.device_id}")
+        print(f"Revoked device: {args.device_id}")
 
 
 async def _run_forever(adapter: R1HermesAdapter, *, ready_file: Path | None = None) -> None:
