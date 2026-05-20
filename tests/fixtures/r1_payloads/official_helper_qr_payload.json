@@ -1,0 +1,8 @@
+{
+  "type": "clawdbot-gateway",
+  "version": 1,
+  "ips": ["100.64.0.10", "192.0.2.10"],
+  "port": 18789,
+  "token": "DUMMY_GATEWAY_TOKEN_DO_NOT_USE",
+  "protocol": "ws"
+}

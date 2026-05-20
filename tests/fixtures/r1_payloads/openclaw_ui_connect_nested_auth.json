@@ -1,0 +1,22 @@
+{
+  "type": "req",
+  "id": "connect-openclaw-ui-001",
+  "method": "gateway.connect",
+  "params": {
+    "auth": {
+      "bearerToken": "DUMMY_GATEWAY_TOKEN_DO_NOT_USE"
+    },
+    "device": {
+      "deviceId": "r1-openclaw-ui",
+      "model": "Rabbit R1 via OpenClaw UI"
+    },
+    "client": {
+      "display_name": "OpenClaw UI"
+    },
+    "protocol": {
+      "name": "clawdbot-gateway",
+      "version": 1
+    },
+    "unknownCaptureField": "ignored"
+  }
+}

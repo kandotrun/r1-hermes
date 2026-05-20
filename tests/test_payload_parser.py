@@ -41,6 +41,11 @@ def test_connect_fixture_payload_aliases_are_normalized_without_repr_secret_leak
             "r1-community-shim",
             "OpenClaw community shim",
         ),
+        (
+            "openclaw_ui_connect_nested_auth.json",
+            "r1-openclaw-ui",
+            "OpenClaw UI",
+        ),
     ],
 )
 def test_connect_variant_fixtures_are_normalized_without_repr_secret_leakage(
@@ -66,6 +71,39 @@ def test_chat_fixture_payload_aliases_are_normalized_and_ignores_device_token():
     assert request.message == "hello Hermes from sanitized capture"
     assert request.session_key == "capture-main"
     assert request.idempotency_key == "sample-run-001"
+    assert "DUMMY_DEVICE_TOKEN_DO_NOT_USE" not in repr(request)
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_message", "expected_session_key", "expected_run_id"),
+    [
+        (
+            "community_shim_chat_message_object.json",
+            "hello Hermes from community shim fixture",
+            "community-main",
+            "community-run-001",
+        ),
+        (
+            "openclaw_ui_chat_content_parts.json",
+            "hello Hermes from OpenClaw UI fixture",
+            "openclaw-ui-main",
+            "openclaw-ui-run-001",
+        ),
+    ],
+)
+def test_chat_variant_fixtures_are_normalized_without_repr_secret_leakage(
+    fixture_name,
+    expected_message,
+    expected_session_key,
+    expected_run_id,
+):
+    frame = load_fixture(fixture_name)
+
+    request = parse_chat_send_params(request_params(frame))
+
+    assert request.message == expected_message
+    assert request.session_key == expected_session_key
+    assert request.idempotency_key == expected_run_id
     assert "DUMMY_DEVICE_TOKEN_DO_NOT_USE" not in repr(request)
 
 
