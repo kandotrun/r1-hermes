@@ -29,6 +29,11 @@ STATE_FILE = "devices.json"
 TOKEN_BYTES = 32
 CONNECT_METHODS = {"connect", "gateway.connect"}
 GATEWAY_CONNECT_ACK_EVENTS = ("connect.ok", "node.pair.approved")
+POLICY_VIOLATION_CLOSE_CODE = 1008
+DEFAULT_UNAUTHENTICATED_CONNECTION_LIMIT = 8
+DEFAULT_UNAUTHENTICATED_ATTEMPT_LIMIT = 8
+DEFAULT_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS = 60
+DEFAULT_UNAUTHENTICATED_COOLDOWN_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -42,6 +47,10 @@ class R1HermesConfig:
     rate_limit_messages: int = 12
     rate_limit_window_seconds: int = 60
     unauthenticated_timeout_seconds: int = 30
+    unauthenticated_connection_limit: int = DEFAULT_UNAUTHENTICATED_CONNECTION_LIMIT
+    unauthenticated_attempt_limit: int = DEFAULT_UNAUTHENTICATED_ATTEMPT_LIMIT
+    unauthenticated_attempt_window_seconds: int = DEFAULT_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS
+    unauthenticated_cooldown_seconds: int = DEFAULT_UNAUTHENTICATED_COOLDOWN_SECONDS
 
     @classmethod
     def from_env(cls, *, state_dir: Path) -> "R1HermesConfig":
@@ -58,6 +67,33 @@ class R1HermesConfig:
             rate_limit_messages=int(os.environ.get("R1_HERMES_RATE_LIMIT_MESSAGES", "12")),
             rate_limit_window_seconds=int(
                 os.environ.get("R1_HERMES_RATE_LIMIT_WINDOW_SECONDS", "60")
+            ),
+            unauthenticated_timeout_seconds=int(
+                os.environ.get("R1_HERMES_UNAUTHENTICATED_TIMEOUT_SECONDS", "30")
+            ),
+            unauthenticated_connection_limit=int(
+                os.environ.get(
+                    "R1_HERMES_UNAUTHENTICATED_CONNECTION_LIMIT",
+                    str(DEFAULT_UNAUTHENTICATED_CONNECTION_LIMIT),
+                )
+            ),
+            unauthenticated_attempt_limit=int(
+                os.environ.get(
+                    "R1_HERMES_UNAUTHENTICATED_ATTEMPT_LIMIT",
+                    str(DEFAULT_UNAUTHENTICATED_ATTEMPT_LIMIT),
+                )
+            ),
+            unauthenticated_attempt_window_seconds=int(
+                os.environ.get(
+                    "R1_HERMES_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS",
+                    str(DEFAULT_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS),
+                )
+            ),
+            unauthenticated_cooldown_seconds=int(
+                os.environ.get(
+                    "R1_HERMES_UNAUTHENTICATED_COOLDOWN_SECONDS",
+                    str(DEFAULT_UNAUTHENTICATED_COOLDOWN_SECONDS),
+                )
             ),
         )
 
@@ -165,6 +201,81 @@ class FixedWindowRateLimiter:
         return True
 
 
+class UnauthenticatedPeerLimiter:
+    def __init__(
+        self,
+        *,
+        max_connections: int,
+        max_attempts: int,
+        window_seconds: int,
+        cooldown_seconds: int,
+    ):
+        self.max_connections = max_connections
+        self.max_attempts = max_attempts
+        self.window_seconds = window_seconds
+        self.cooldown_seconds = cooldown_seconds
+        self.active_connections: dict[str, int] = {}
+        self.attempts: dict[str, deque[float]] = defaultdict(deque)
+        self.cooldowns: dict[str, float] = {}
+
+    def allow_connection(self, key: str) -> bool:
+        self._prune(key)
+        if self._is_cooled_down(key):
+            return False
+        active = self.active_connections.get(key, 0)
+        if self.max_connections > 0 and active >= self.max_connections:
+            return False
+        self.active_connections[key] = active + 1
+        return True
+
+    def release_connection(self, key: str) -> None:
+        active = self.active_connections.get(key)
+        if active is None:
+            return
+        if active <= 1:
+            self.active_connections.pop(key, None)
+            return
+        self.active_connections[key] = active - 1
+
+    def record_attempt(self, key: str) -> bool:
+        now = time.monotonic()
+        self._prune(key, now=now)
+        if self._is_cooled_down(key, now=now):
+            return False
+
+        q = self.attempts[key]
+        if self.max_attempts > 0 and len(q) >= self.max_attempts:
+            self.cooldowns[key] = now + self.cooldown_seconds
+            return False
+
+        q.append(now)
+        if self.max_attempts > 0 and len(q) >= self.max_attempts:
+            self.cooldowns[key] = now + self.cooldown_seconds
+        return True
+
+    def clear(self, key: str) -> None:
+        self.attempts.pop(key, None)
+        self.cooldowns.pop(key, None)
+
+    def _prune(self, key: str, *, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        q = self.attempts.get(key)
+        if q is not None:
+            while q and now - q[0] > self.window_seconds:
+                q.popleft()
+            if not q:
+                self.attempts.pop(key, None)
+
+        until = self.cooldowns.get(key)
+        if until is not None and now >= until:
+            self.cooldowns.pop(key, None)
+
+    def _is_cooled_down(self, key: str, *, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        until = self.cooldowns.get(key)
+        return until is not None and now < until
+
+
 class R1HermesAdapter:
     """Hardened OpenClaw-compatible WebSocket adapter.
 
@@ -183,6 +294,12 @@ class R1HermesAdapter:
         self._app: web.Application | None = None
         self._rate_limiter = FixedWindowRateLimiter(
             config.rate_limit_messages, config.rate_limit_window_seconds
+        )
+        self._unauthenticated_limiter = UnauthenticatedPeerLimiter(
+            max_connections=config.unauthenticated_connection_limit,
+            max_attempts=config.unauthenticated_attempt_limit,
+            window_seconds=config.unauthenticated_attempt_window_seconds,
+            cooldown_seconds=config.unauthenticated_cooldown_seconds,
         )
         self._inflight_by_device: dict[str, int] = defaultdict(int)
         self._inflight_lock = asyncio.Lock()
@@ -212,8 +329,14 @@ class R1HermesAdapter:
         if request.headers.get("Upgrade", "").lower() != "websocket":
             raise web.HTTPNotFound()
 
+        peer_key = _peer_key(request)
         ws = web.WebSocketResponse(heartbeat=20, max_msg_size=self.config.max_message_chars * 4)
         await ws.prepare(request)
+        if not self._unauthenticated_limiter.allow_connection(peer_key):
+            await _send_error(ws, None, "RATE_LIMITED", "too many unauthenticated attempts")
+            await ws.close(code=POLICY_VIOLATION_CLOSE_CODE, message=b"rate limited")
+            return ws
+
         nonce = secrets.token_hex(16)
         authenticated = False
         device_id = ""
@@ -235,11 +358,14 @@ class R1HermesAdapter:
                     authenticated=authenticated,
                     device_id=device_id,
                     session_started=session_started,
+                    peer_key=peer_key,
                 )
                 device_id = next_device_id or device_id
                 if ws.closed:
                     break
         finally:
+            if not authenticated:
+                self._unauthenticated_limiter.release_connection(peer_key)
             if authenticated and device_id:
                 await self._on_ws_closed(ws, device_id=device_id)
 
@@ -253,6 +379,7 @@ class R1HermesAdapter:
         authenticated: bool,
         device_id: str,
         session_started: float,
+        peer_key: str,
     ) -> tuple[str, bool]:
         if msg.type != WSMsgType.TEXT:
             return device_id, authenticated
@@ -261,7 +388,12 @@ class R1HermesAdapter:
             and time.monotonic() - session_started > self.config.unauthenticated_timeout_seconds
         ):
             await _send_error(ws, None, "UNAUTHENTICATED", "connect timeout")
-            await ws.close(code=1008, message=b"connect timeout")
+            await ws.close(code=POLICY_VIOLATION_CLOSE_CODE, message=b"connect timeout")
+            return device_id, authenticated
+
+        if not authenticated and not self._unauthenticated_limiter.record_attempt(peer_key):
+            await _send_error(ws, None, "RATE_LIMITED", "too many unauthenticated attempts")
+            await ws.close(code=POLICY_VIOLATION_CLOSE_CODE, message=b"rate limited")
             return device_id, authenticated
 
         try:
@@ -292,6 +424,9 @@ class R1HermesAdapter:
                 )
                 return device_id, authenticated
             next_device_id, next_authenticated = await self._handle_connect(ws, rid, frame)
+            if next_authenticated:
+                self._unauthenticated_limiter.release_connection(peer_key)
+                self._unauthenticated_limiter.clear(peer_key)
             return next_device_id, next_authenticated
         if not authenticated:
             await _send_error(ws, rid, "UNAUTHENTICATED", "connect required before requests")
@@ -315,7 +450,7 @@ class R1HermesAdapter:
         )
         if not ok:
             await _send_error(ws, rid, "UNAUTHORIZED", device_id_or_error)
-            await ws.close(code=1008, message=b"unauthorized")
+            await ws.close(code=POLICY_VIOLATION_CLOSE_CODE, message=b"unauthorized")
             return "", False
         await ws.send_json(_hello_response(rid, device_token))
         if frame.get("method") == "gateway.connect":
@@ -496,6 +631,17 @@ def _hash_token(token: str) -> str:
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _peer_key(request: web.Request) -> str:
+    peername = request.transport.get_extra_info("peername") if request.transport else None
+    if isinstance(peername, tuple) and peername:
+        host = peername[0]
+        if isinstance(host, str) and host:
+            return host
+    if isinstance(request.remote, str) and request.remote:
+        return request.remote
+    return "unknown-peer"
 
 
 async def _send_error(ws: web.WebSocketResponse, rid: Any, code: str, message: str) -> None:

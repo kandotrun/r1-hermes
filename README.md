@@ -9,7 +9,7 @@ This repository is intentionally security-first. It implements the Rabbit R1/Ope
 - no full-token logging
 - no unauthenticated admin page
 - device tokens are bound to device IDs and stored only as hashes
-- rate limits, message length limits, and per-device concurrency limits
+- unauthenticated handshake limits plus authenticated rate, length, and concurrency limits
 - explicit install docs and security checklist
 
 Status: runnable MVP. The default runtime is a standalone bridge that accepts Rabbit R1/OpenClaw
@@ -125,9 +125,28 @@ The demo handler echoes messages. Use `r1-hermes hermes` for a gateway that actu
 
 - An R1 device must complete `connect` or the compatible `gateway.connect` authentication before
   `chat.send` is accepted.
+- Unauthenticated WebSocket clients are limited by peer IP before authentication. Repeated bad or
+  malformed handshake attempts are closed with a policy-violation code and never reach Hermes.
 - Each device/session key resumes a stable Hermes CLI session via `hermes chat --continue r1-hermes-...`.
 - Hermes stderr is not returned to R1 to avoid leaking secrets.
 - Failures are returned as short, generic messages and details stay in local logs.
+
+## Rate-limit configuration
+
+The defaults are intentionally conservative for a localhost or private-network gateway:
+
+```text
+R1_HERMES_UNAUTHENTICATED_CONNECTION_LIMIT=8
+R1_HERMES_UNAUTHENTICATED_ATTEMPT_LIMIT=8
+R1_HERMES_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS=60
+R1_HERMES_UNAUTHENTICATED_COOLDOWN_SECONDS=60
+R1_HERMES_UNAUTHENTICATED_TIMEOUT_SECONDS=30
+R1_HERMES_RATE_LIMIT_MESSAGES=12
+R1_HERMES_RATE_LIMIT_WINDOW_SECONDS=60
+```
+
+Lower the unauthenticated limits for hostile networks. Do not loosen them to compensate for public
+Internet exposure; use a narrow bind address, firewall, Tailscale, mTLS, or IP allowlisting instead.
 
 ## Hermes Gateway status
 

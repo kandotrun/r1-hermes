@@ -20,8 +20,9 @@ For supported Python versions and disclosure routing, see [`../README.md`](../RE
 3. Never log or render full gateway tokens or device tokens.
 4. No unauthenticated admin UI.
 5. Device tokens are stored as SHA-256 hashes under a `0700` state directory and bound to the original `device.id`.
-6. Rate limit, length limit, and per-device concurrency limit are enforced before Hermes execution.
-7. QR payloads contain secrets and must be shared/retained accordingly.
+6. Unauthenticated handshake limits are enforced by peer IP before authentication.
+7. Authenticated rate limit, length limit, and per-device concurrency limit are enforced before Hermes execution.
+8. QR payloads contain secrets and must be shared/retained accordingly.
 
 ## Recommended deployment
 
@@ -72,6 +73,28 @@ also emits compatibility acknowledgement events named `connect.ok` and `node.pai
 events intentionally contain only acknowledgement metadata such as `ok`, `deviceId`, and timestamp;
 they do not include the gateway token or issued device token. Failed or malformed handshakes do not
 emit acknowledgement events and do not invoke Hermes.
+
+Unauthenticated clients are tracked by remote peer IP, with a conservative fallback key when peer
+metadata is unavailable. The gateway sends only generic `RATE_LIMITED`, `UNAUTHORIZED`, or malformed
+request errors, closes abusive unauthenticated sockets with WebSocket policy-violation code `1008`,
+and does not echo supplied auth tokens, device IDs, QR payloads, or raw authorization headers.
+
+## Handshake rate-limit settings
+
+The default limits are in-memory and reset when the process restarts:
+
+```text
+R1_HERMES_UNAUTHENTICATED_CONNECTION_LIMIT=8
+R1_HERMES_UNAUTHENTICATED_ATTEMPT_LIMIT=8
+R1_HERMES_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS=60
+R1_HERMES_UNAUTHENTICATED_COOLDOWN_SECONDS=60
+R1_HERMES_UNAUTHENTICATED_TIMEOUT_SECONDS=30
+```
+
+`R1_HERMES_UNAUTHENTICATED_CONNECTION_LIMIT` limits concurrent pre-authentication sockets per peer.
+`R1_HERMES_UNAUTHENTICATED_ATTEMPT_LIMIT` counts malformed frames, unauthenticated requests, and
+failed `connect` attempts before a short cooldown begins. These controls are defense in depth; they
+do not make direct public-Internet exposure acceptable.
 
 This project does not implement unauthenticated pairing, browser admin pairing, arbitrary method
 forwarding, binary capture replay, or non-chat Rabbit services. Unsupported methods continue to
