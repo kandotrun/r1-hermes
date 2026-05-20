@@ -8,6 +8,7 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import secrets
 import socket
 import ssl
@@ -83,8 +84,14 @@ class R1HermesConfig:
     health_diagnostics: bool = False
     tls_cert_file: Path | None = None
     tls_key_file: Path | None = None
+    allowed_device_ids: frozenset[str] | tuple[str, ...] | list[str] | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "allowed_device_ids",
+            _normalize_allowed_device_ids(self.allowed_device_ids),
+        )
         if not self.allow_public_bind and _is_wildcard_public_bind(self.host):
             raise ValueError(PUBLIC_BIND_ERROR.format(host=self.host))
         if bool(self.tls_cert_file) != bool(self.tls_key_file):
@@ -108,6 +115,7 @@ class R1HermesConfig:
         health_diagnostics: bool | None = None,
         tls_cert_file: Path | None = None,
         tls_key_file: Path | None = None,
+        allowed_device_ids: list[str] | tuple[str, ...] | frozenset[str] | None = None,
     ) -> "R1HermesConfig":
         token = os.environ.get("R1_HERMES_GATEWAY_TOKEN", "")
         if not token:
@@ -221,6 +229,11 @@ class R1HermesConfig:
                 tls_key_file
                 if tls_key_file is not None
                 else _optional_env_path("R1_HERMES_TLS_KEY_FILE")
+            ),
+            allowed_device_ids=(
+                _allowed_device_ids_from_env()
+                if allowed_device_ids is None
+                else allowed_device_ids
             ),
         )
 
@@ -990,6 +1003,12 @@ class R1HermesAdapter:
     def _authenticate_connect(
         self, supplied: str, *, device_id: str, display_name: str
     ) -> AuthResult:
+        if (
+            self.config.allowed_device_ids is not None
+            and device_id not in self.config.allowed_device_ids
+        ):
+            return AuthResult(ok=False, failure_reason="device_not_allowed")
+
         if hmac.compare_digest(supplied, self.config.gateway_token):
             return AuthResult(
                 ok=True,
@@ -1363,6 +1382,23 @@ def _validate_config(config: R1HermesConfig) -> None:
         raise ValueError("rate_limit_window_seconds must be at least 1")
     if config.unauthenticated_timeout_seconds < 1:
         raise ValueError("unauthenticated_timeout_seconds must be at least 1")
+
+
+def _allowed_device_ids_from_env() -> frozenset[str] | None:
+    return _normalize_allowed_device_ids(os.environ.get("R1_HERMES_ALLOWED_DEVICE_IDS"))
+
+
+def _normalize_allowed_device_ids(
+    value: str | list[str] | tuple[str, ...] | frozenset[str] | None,
+) -> frozenset[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        candidates = re.split(r"[\s,]+", value)
+    else:
+        candidates = value
+    normalized = frozenset(device_id.strip() for device_id in candidates if device_id.strip())
+    return normalized or None
 
 
 def _env_flag(name: str) -> bool:

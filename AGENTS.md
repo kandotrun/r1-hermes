@@ -12,6 +12,7 @@ Set up `r1-hermes`, run a Hermes-backed Rabbit R1/OpenClaw-compatible WebSocket 
 - Never paste full tokens or QR payloads into chat, issue comments, logs, PR descriptions, or screenshots.
 - Bind to `127.0.0.1` for local smoke tests.
 - For real Rabbit R1 pairing, prefer a narrow reachable address such as the host's Tailscale IP. Do not bind to `0.0.0.0` unless the human explicitly approves the network boundary.
+- If the expected Rabbit R1 `device.id` is known, start the real gateway with `--allowed-device-id` or `R1_HERMES_ALLOWED_DEVICE_IDS`. If it is not known, leave the allowlist unset only on a private first-pairing boundary, then restart with the allowlist after recording the intended ID locally.
 - Default Hermes toolset should remain `safe`. Do not enable `terminal`, `file`, smart-home, or other high-impact toolsets for an R1 device unless the human explicitly approves.
 - Delete the QR PNG after pairing unless the human asks to keep it.
 
@@ -48,6 +49,8 @@ r1-hermes hermes --host <REACHABLE_HOST_OR_TAILSCALE_IP> --port 18789
 r1-hermes qr --host <REACHABLE_HOST_OR_TAILSCALE_IP> --port 18789 --protocol ws --output ./r1-hermes-secret.png
 ```
 
+If the allowed device ID is known, add `--allowed-device-id <DEVICE_ID>` to the gateway command.
+
 Deliver the QR as a local file path or native media attachment only when the platform supports secure delivery. Remind the human that it contains a bearer secret.
 
 ## Verification before reporting success
@@ -56,6 +59,7 @@ Deliver the QR as a local file path or native media attachment only when the pla
 - `hermes chat --quiet --source r1-hermes-smoke --toolsets safe --query 'Reply with exactly OK'` returns `OK` or an equivalent exact response.
 - `r1-hermes probe --url ws://<host>:18789/ --message 'Reply with exactly OK'` returns a Hermes response and does not print the device token.
 - The gateway is bound only to the intended host/port.
+- If configured, the allowed-device list matches the intended Rabbit R1 ID before normal operation.
 - The QR file exists, has restricted handling, and its path is reported without printing the underlying payload.
 
 ## Useful files

@@ -191,6 +191,13 @@ capacity and expects multiple trusted devices to talk at once. Do not raise the 
 an R1 device unless the human explicitly accepts that one device can occupy multiple Hermes
 subprocess slots.
 
+If the human already knows the Rabbit R1 `device.id`, add `--allowed-device-id <device-id>` to the
+real gateway command, or set `R1_HERMES_ALLOWED_DEVICE_IDS` in the service environment. If the ID is
+not known yet, leave the allowlist unset only for this private first-pairing boundary. After the R1
+pairs, record the intended ID locally from the state file, use the sanitized `device_id_hash` in
+audit logs only for correlation, then restart the gateway with the allowlist before normal
+operation. Never paste raw real-device IDs from captures into GitHub comments or PR text.
+
 For a long-running setup, use a process supervisor such as systemd/tmux according to the human's environment. The minimal requirement is that the process remains running while Rabbit R1 pairs and sends messages.
 
 Verify the bound address/port locally:

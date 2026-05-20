@@ -54,6 +54,27 @@ r1-hermes hermes --host 100.x.y.z --port 18789
 r1-hermes qr --host 100.x.y.z --port 18789 --protocol ws --output ./r1-hermes-secret.png
 ```
 
+If the expected Rabbit R1 `device.id` is already known, start the gateway in locked-down mode:
+
+```bash
+r1-hermes hermes \
+  --host 100.x.y.z \
+  --port 18789 \
+  --allowed-device-id r1-known-device-id
+```
+
+`--allowed-device-id` is repeatable. `R1_HERMES_ALLOWED_DEVICE_IDS` accepts comma, space, or
+newline-separated IDs for service env files. When configured, unlisted IDs are rejected before a
+gateway-token pairing can issue a device token, and existing `devices.json` records for unlisted
+IDs cannot reconnect with their old device tokens.
+
+For first pairing when you do not know the R1 ID yet, leave the allowlist unset only on a private
+network boundary such as localhost through Tailscale Serve, a specific Tailscale IP, or an mTLS/IP
+allowlisted proxy. Pair once, record the intended device ID from the local state file or the
+sanitized device ID hash in local audit logs for correlation, then restart the gateway with
+`--allowed-device-id` or `R1_HERMES_ALLOWED_DEVICE_IDS` before normal use. Do not paste raw device
+IDs from real captures or logs into issues or pull requests.
+
 The gateway starts at most two Hermes subprocess-backed chat runs at once by default, and at most
 one per authenticated device ID:
 
@@ -535,18 +556,22 @@ offline semantics.
 If this moves into Hermes core, the Gateway adapter should map the prototype fields to Hermes'
 actual `MessageEvent` class, call the standard Gateway `_message_handler`, implement `send()` using
 the active WebSocket map, and load R1 platform toolsets from Gateway config rather than CLI flags.
-The allowed user policy should default to the authenticated `device.id`, with an explicit allowlist
-for known device IDs when the deployment needs one. Do not accept any `chat.send` before `connect`,
-do not broaden the default bind address or log bearer material during migration, and keep
-high-impact platform toolsets behind the same explicit allowlist.
+The allowed user policy should default to the authenticated `device.id`, and the runtime
+`R1_HERMES_ALLOWED_DEVICE_IDS` / `--allowed-device-id` policy should stay aligned between the
+standalone bridge and native adapter. Do not accept any `chat.send` before `connect`, do not broaden
+the default bind address or log bearer material during migration, and keep high-impact platform
+toolsets behind the same explicit allowlist.
 
 ## Migration notes
 
 No external DB migration is needed for the current `r1-hermes` standalone bridge or the local
-native prototype; both continue to use the local `devices.json` state file. On first successful
-device-token reconnect, older unkeyed SHA-256 records are upgraded in place to keyed HMAC digests.
-The `chat.history` compatibility contract stores no history, so it adds no local state-file
-migration and no persistence compatibility plan.
+native prototype; both continue to use the local `devices.json` state file. The allowed-device
+policy is runtime configuration only. Existing `devices.json` records remain valid on disk, but
+records whose device IDs are not in the configured allowlist are rejected at reconnect until the
+allowlist includes them or the operator revokes/removes them. On first successful device-token
+reconnect, older unkeyed SHA-256 records are upgraded in place to keyed HMAC digests. The
+`chat.history` compatibility contract stores no history, so it adds no local state-file migration
+and no persistence compatibility plan.
 The prototype uses platform name `rabbit_r1` and session ID `r1:<device_id>:<session_key>`. Moving
 an existing CLI deployment to a future Hermes-native platform can change the Hermes
 conversation/session identity because the standalone bridge currently uses
