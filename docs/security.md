@@ -22,11 +22,16 @@
 
 Prefer one of:
 
-- `127.0.0.1` + Tailscale Serve/Funnel with access controls
+- `127.0.0.1` + Tailscale Serve with tailnet ACLs
 - `127.0.0.1` + reverse proxy with mTLS or IP allowlist
+- direct bind to a specific Tailscale IP such as `100.x.y.z` when the R1 reaches the host over a tailnet
 - LAN bind only on a trusted isolated network
 
 Do not expose raw `ws://0.0.0.0:18789` to the public Internet.
+
+For persistent deployment, use the systemd user-service template in
+[`docs/systemd-user-service.md`](systemd-user-service.md). Keep `R1_HERMES_GATEWAY_TOKEN` in the
+env file only, verify the `--ready-file`, and run `r1-hermes probe` before pairing a device.
 
 ## Pairing flow
 
