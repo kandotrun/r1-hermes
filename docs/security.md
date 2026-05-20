@@ -48,6 +48,21 @@ For persistent deployment, use the systemd user-service template in
 [`docs/systemd-user-service.md`](systemd-user-service.md). Keep `R1_HERMES_GATEWAY_TOKEN` in the
 env file only, verify the `--ready-file`, and run `r1-hermes probe` before pairing a device.
 
+For Tailscale Serve or a reverse proxy, keep the raw gateway on `127.0.0.1` and advertise only the
+controlled external URL. Use `ws://` in the QR only when Rabbit R1 connects directly to the raw
+`r1-hermes` listener over a reviewed private, non-TLS path such as a concrete Tailscale IP or
+isolated LAN IP. Use `wss://` when Tailscale Serve, Caddy, nginx, or another reverse proxy
+terminates TLS and forwards to the loopback backend. Do not mark a plain `ws://` backend as
+`wss://`; the QR protocol must match the URL Rabbit R1 actually dials, not the proxy's upstream
+URL.
+
+Before scanning a QR, verify both sides of the boundary: on the gateway host, confirm the raw
+listener is bound only to the intended address with a command such as `ss -ltnp | grep ':18789'`;
+from an allowed client, run `r1-hermes probe` against the exact advertised `ws://` or `wss://` URL;
+from an untrusted network, confirm the URL fails closed or returns an access error and does not
+return HTTP 200. Do not generate or share the QR PNG until the success and failure checks match the
+intended network policy.
+
 `/healthz` returns only `{"ok": true}` by default and rejects non-local peers. If an external
 supervisor genuinely needs the endpoint, set `--allow-remote-health` or
 `R1_HERMES_ALLOW_REMOTE_HEALTH=1` only after reviewing the network boundary. Paired-device counts

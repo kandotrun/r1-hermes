@@ -60,6 +60,168 @@ interfaces unless you explicitly acknowledge the exposure with `--allow-public-b
 boundary only. Prefer `127.0.0.1` with Tailscale Serve, `127.0.0.1` behind a reverse proxy with
 mTLS or IP allowlisting, or a concrete Tailscale/LAN IP.
 
+### Tailscale Serve recipe
+
+Use this when the Rabbit R1 can reach a Tailscale HTTPS service name. `r1-hermes` stays bound to
+loopback, while Tailscale handles the reachable TLS listener and tailnet access controls.
+
+In the private shell that starts the gateway, source or export `R1_HERMES_GATEWAY_TOKEN` without
+echoing it, then start the raw gateway on localhost only:
+
+```bash
+r1-hermes hermes \
+  --host 127.0.0.1 \
+  --port 18789 \
+  --ready-file /tmp/r1-hermes.ready
+```
+
+Publish that local listener through Tailscale Serve:
+
+```bash
+tailscale serve --bg --https=443 127.0.0.1:18789
+tailscale serve status
+```
+
+If your installed Tailscale CLI requires an explicit HTTP upstream URL, use this equivalent form:
+
+```bash
+tailscale serve --bg --https=443 http://127.0.0.1:18789
+```
+
+Verify the gateway is not listening on a raw public interface:
+
+```bash
+ss -ltnp | grep ':18789'
+```
+
+Expected: the `r1-hermes` listener is on `127.0.0.1:18789` or `[::1]:18789`, not `0.0.0.0:18789`
+or `[::]:18789`. If it is wider than loopback, stop the gateway and restart it with
+`--host 127.0.0.1` before pairing.
+
+Verify the Tailscale HTTPS URL from a tailnet client that should be allowed:
+
+```bash
+curl --fail --silent https://r1-hermes-host.tailnet-name.ts.net/healthz
+r1-hermes probe \
+  --url wss://r1-hermes-host.tailnet-name.ts.net/ \
+  --message 'Reply with OK from Hermes'
+```
+
+From a machine or network that is not allowed by your tailnet ACLs, the same HTTPS URL must fail to
+connect or return an access error. It must not return HTTP 200:
+
+```bash
+curl --fail --silent --show-error https://r1-hermes-host.tailnet-name.ts.net/healthz
+```
+
+Generate the QR for the Tailscale HTTPS service name, not for `127.0.0.1`:
+
+```bash
+r1-hermes qr \
+  --host r1-hermes-host.tailnet-name.ts.net \
+  --port 443 \
+  --protocol wss \
+  --output ./r1-hermes-secret.png
+```
+
+Do not use `tailscale funnel` for this service unless a human explicitly approves public-Internet
+exposure and compensating controls. Tailscale Serve keeps the endpoint inside the tailnet; Funnel
+is a different public exposure model.
+
+### Reverse proxy recipe
+
+Use this when Rabbit R1 must connect through an HTTPS hostname outside localhost. Keep the backend
+bound to loopback and put the network policy at the proxy. The example below uses Caddy with either
+mTLS or an explicit source IP allowlist; keep at least one of those controls enabled.
+
+Start the backend on loopback:
+
+```bash
+r1-hermes hermes \
+  --host 127.0.0.1 \
+  --port 18789 \
+  --ready-file /tmp/r1-hermes.ready
+```
+
+Use a Caddyfile like this for mTLS:
+
+```caddyfile
+r1.example.com {
+    tls {
+        client_auth {
+            mode require_and_verify
+            trust_pool file /etc/caddy/r1-client-ca.pem
+        }
+    }
+
+    reverse_proxy 127.0.0.1:18789
+}
+```
+
+If mTLS is not available, use an explicit allowlist at the proxy and keep the list as narrow as the
+Rabbit R1's real egress path allows:
+
+```caddyfile
+r1.example.com {
+    @allowed remote_ip 198.51.100.10 203.0.113.0/24 2001:db8:1234::/48
+    @not_allowed not remote_ip 198.51.100.10 203.0.113.0/24 2001:db8:1234::/48
+
+    respond @not_allowed "forbidden" 403
+    reverse_proxy @allowed 127.0.0.1:18789
+}
+```
+
+If the proxy is behind another trusted proxy or load balancer, configure Caddy's trusted-proxy
+handling before relying on `remote_ip`; otherwise allowlisting may check the proxy address instead
+of the original client.
+
+Verify backend bind and local readiness on the gateway host:
+
+```bash
+ss -ltnp | grep ':18789'
+curl --fail --silent http://127.0.0.1:18789/healthz
+```
+
+Verify the trusted path succeeds from an allowed client:
+
+```bash
+curl --fail --silent https://r1.example.com/healthz
+r1-hermes probe --url wss://r1.example.com/ --message 'Reply with OK from Hermes'
+```
+
+Verify the failure case from an untrusted network before generating a QR. The request must fail TLS
+client-certificate authentication, return 403, time out, or otherwise fail closed; it must not
+return HTTP 200:
+
+```bash
+curl --silent --show-error \
+  --output /dev/null \
+  --write-out '%{http_code}\n' \
+  https://r1.example.com/healthz
+```
+
+Generate the QR for the proxy's external TLS URL:
+
+```bash
+r1-hermes qr \
+  --host r1.example.com \
+  --port 443 \
+  --protocol wss \
+  --output ./r1-hermes-secret.png
+```
+
+Keep Caddy/nginx access logs and shell transcripts free of QR payload JSON, gateway tokens, device
+tokens, and raw authorization headers. Do not use `--print-payload` in deployment runbooks.
+
+### QR protocol selection
+
+Use `ws://` in the QR only when Rabbit R1 connects directly to the raw `r1-hermes` listener over a
+reviewed private, non-TLS path such as a concrete Tailscale IP or isolated LAN IP. Use `wss://`
+when Tailscale Serve, Caddy, nginx, or another reverse proxy terminates TLS and forwards to the
+loopback backend. Do not mark a plain `ws://` backend as `wss://`; the QR protocol must match the
+URL Rabbit R1 actually dials, not the proxy's upstream URL. Do not advertise `127.0.0.1` in a
+real-device QR unless the client is running on the same host.
+
 `r1-hermes qr` writes an owner-only PNG and fails if `--output` already exists. Use `--overwrite`
 only after confirming the old PNG is no longer needed. The command intentionally does not print the
 secret payload JSON unless `--print-payload` is supplied.
