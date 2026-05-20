@@ -67,6 +67,11 @@ Leave `R1_HERMES_ALLOW_PUBLIC_BIND` unset for localhost and concrete IP binds. S
 allows all-interface binds and should be treated as an explicit exposure acknowledgement, not
 routine configuration.
 
+Keep `R1_HERMES_TOOLSETS=safe` for normal R1 use. `safe,web` is the usual explicit expansion when
+web access is needed. High-impact values such as `terminal`, `shell`, `file`/`filesystem`,
+browser/desktop automation, smart-home, or vehicle controls fail closed unless the service env file
+also sets `R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1` after a deployment review.
+
 Leave HTTP health checks local-only unless a reviewed supervisor must reach `/healthz` from another
 host. The default response is only `{"ok": true}` and does not include paired-device counts. If a
 private, access-controlled monitoring path genuinely needs remote health checks, set

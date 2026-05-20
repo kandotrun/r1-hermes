@@ -10,6 +10,7 @@ from typing import Any
 from aiohttp import web
 
 from .adapter import R1HermesAdapter, R1HermesConfig
+from .toolsets import sanitize_platform_toolsets
 
 DEFAULT_NATIVE_PLATFORM = "rabbit_r1"
 DEFAULT_NATIVE_TOOLSETS = ("safe",)
@@ -46,10 +47,14 @@ class R1GatewayMessageBridge:
         gateway_message_handler: GatewayMessageHandler,
         platform_name: str = DEFAULT_NATIVE_PLATFORM,
         platform_toolsets: Sequence[str] = DEFAULT_NATIVE_TOOLSETS,
+        allow_high_impact_toolsets: bool = False,
     ):
         self.gateway_message_handler = gateway_message_handler
         self.platform_name = _safe_component(platform_name or DEFAULT_NATIVE_PLATFORM)
-        self.platform_toolsets = tuple(toolset for toolset in platform_toolsets if toolset)
+        self.platform_toolsets = sanitize_platform_toolsets(
+            platform_toolsets,
+            allow_high_impact_toolsets=allow_high_impact_toolsets,
+        )
 
     async def __call__(self, text: str, *, device_id: str, session_key: str) -> str:
         event = self.to_message_event(text, device_id=device_id, session_key=session_key)
@@ -102,12 +107,14 @@ class R1NativeGatewayAdapter(R1HermesAdapter):
         gateway_message_handler: GatewayMessageHandler,
         platform_name: str = DEFAULT_NATIVE_PLATFORM,
         platform_toolsets: Sequence[str] = DEFAULT_NATIVE_TOOLSETS,
+        allow_high_impact_toolsets: bool = False,
         allowed_device_ids: Iterable[str] | None = None,
     ):
         self.bridge = R1GatewayMessageBridge(
             gateway_message_handler=gateway_message_handler,
             platform_name=platform_name,
             platform_toolsets=platform_toolsets,
+            allow_high_impact_toolsets=allow_high_impact_toolsets,
         )
         self.allowed_device_ids = (
             frozenset(_safe_component(device_id) for device_id in allowed_device_ids)
