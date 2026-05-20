@@ -64,6 +64,13 @@ mTLS or IP allowlisting, or a concrete Tailscale/LAN IP.
 only after confirming the old PNG is no longer needed. The command intentionally does not print the
 secret payload JSON unless `--print-payload` is supplied.
 
+Pairing state is stored in the gateway state directory. New device-token records are keyed
+`hmac-sha256:v1` digests in `devices.json`, and the local HMAC key is stored separately as
+`device-token-hmac.key` with owner-only permissions. Older unkeyed SHA-256 device-token records are
+rewritten to keyed digests after the next successful device-token authentication. If the HMAC key is
+lost while keeping keyed `devices.json` records, remove or revoke the stale records and re-pair the
+Rabbit R1 with a fresh gateway token and QR.
+
 Before scanning with the real device, probe the exact WebSocket flow from this machine:
 
 ```bash
@@ -209,7 +216,7 @@ Plugin platform package:
 
 The prototype in `src/r1_hermes/native_gateway.py` covers the local side of that design without
 taking a runtime dependency on the Hermes repository. `R1NativeGatewayAdapter` keeps the same
-localhost/private-network defaults, token authentication, device-token hashing, rate limits, message
+localhost/private-network defaults, token authentication, keyed device-token digest storage, rate limits, message
 length limits, global/per-device concurrency limits, and generic error events as the standalone adapter. Its `R1GatewayMessageBridge`
 converts `chat.send` into a dependency-free `R1GatewayMessageEvent` with these stable fields:
 
@@ -235,10 +242,12 @@ and do not broaden the default bind address or log bearer material during migrat
 
 ## Migration notes
 
-No persistent DB migration is needed for the current `r1-hermes` standalone bridge or the local
-native prototype; both continue to use the existing hashed `devices.json` state file. The prototype
-uses platform name `rabbit_r1` and session ID `r1:<device_id>:<session_key>`. Moving an existing CLI
-deployment to a future Hermes-native platform can change the Hermes conversation/session identity
-because the standalone bridge currently uses `hermes chat --continue r1-hermes-...`. Treat that as a
-conversation-continuity break unless the Hermes-side migration explicitly aliases the old
-`r1-hermes-*` CLI continuation names to the new Gateway session IDs.
+No external DB migration is needed for the current `r1-hermes` standalone bridge or the local
+native prototype; both continue to use the local `devices.json` state file. On first successful
+device-token reconnect, older unkeyed SHA-256 records are upgraded in place to keyed HMAC digests.
+The prototype uses platform name `rabbit_r1` and session ID `r1:<device_id>:<session_key>`. Moving
+an existing CLI deployment to a future Hermes-native platform can change the Hermes
+conversation/session identity because the standalone bridge currently uses
+`hermes chat --continue r1-hermes-...`. Treat that as a conversation-continuity break unless the
+Hermes-side migration explicitly aliases the old `r1-hermes-*` CLI continuation names to the new
+Gateway session IDs.

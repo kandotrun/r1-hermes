@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import binascii
 import hashlib
 import hmac
 import ipaddress
@@ -29,7 +30,10 @@ DEFAULT_PORT = 18789
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_GLOBAL_CONCURRENCY = 2
 STATE_FILE = "devices.json"
+STATE_DIGEST_KEY_FILE = "device-token-hmac.key"
 TOKEN_BYTES = 32
+DIGEST_PREFIX = "hmac-sha256:v1:"
+DIGEST_KEY_BYTES = 32
 CONNECT_METHODS = {"connect", "gateway.connect"}
 GATEWAY_CONNECT_ACK_EVENTS = ("connect.ok", "node.pair.approved")
 POLICY_VIOLATION_CLOSE_CODE = 1008
@@ -172,15 +176,44 @@ class DeviceRecord:
 
 
 class DeviceState:
-    """Device-token store that persists only hashes and binds tokens to device IDs."""
+    """Device-token store that persists keyed digests and binds tokens to device IDs."""
 
     def __init__(self, state_dir: Path):
         self.state_dir = state_dir
         self.state_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.state_dir, stat.S_IRWXU)
         self.path = self.state_dir / STATE_FILE
+        self.key_path = self.state_dir / STATE_DIGEST_KEY_FILE
+        self._digest_key = self._load_or_create_digest_key()
         self.devices: dict[str, DeviceRecord] = {}
         self.load()
+
+    def _load_or_create_digest_key(self) -> bytes:
+        if self.key_path.is_symlink():
+            raise ValueError("device token digest key path must not be a symlink")
+        if self.key_path.exists():
+            os.chmod(self.key_path, stat.S_IRUSR | stat.S_IWUSR)
+            raw = self.key_path.read_text().strip()
+            try:
+                key = binascii.unhexlify(raw.encode("ascii"))
+            except (binascii.Error, ValueError) as exc:
+                raise ValueError("device token digest key is not valid hex") from exc
+            if len(key) < DIGEST_KEY_BYTES:
+                raise ValueError("device token digest key is too short")
+            return key
+
+        key = secrets.token_bytes(DIGEST_KEY_BYTES)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        fd = os.open(self.key_path, flags, stat.S_IRUSR | stat.S_IWUSR)
+        try:
+            with os.fdopen(fd, "w") as handle:
+                fd = -1
+                handle.write(f"{key.hex()}\n")
+        finally:
+            if fd != -1:  # pragma: no cover - defensive cleanup
+                os.close(fd)
+        os.chmod(self.key_path, stat.S_IRUSR | stat.S_IWUSR)
+        return key
 
     def load(self) -> None:
         if not self.path.exists():
@@ -204,7 +237,7 @@ class DeviceState:
         token = secrets.token_urlsafe(TOKEN_BYTES)
         self.devices[device_id] = DeviceRecord(
             device_id=device_id,
-            token_hash=_hash_token(token),
+            token_hash=_hash_token(token, self._digest_key),
             display_name=display_name or "Rabbit R1",
             created_at_ms=now,
             last_seen_at_ms=now,
@@ -216,8 +249,15 @@ class DeviceState:
         record = self.devices.get(device_id)
         if not record:
             return False
-        ok = hmac.compare_digest(record.token_hash, _hash_token(token))
+        token_hash = _hash_token(token, self._digest_key)
+        ok = hmac.compare_digest(record.token_hash, token_hash)
+        needs_upgrade = False
+        if not ok and _is_legacy_token_hash(record.token_hash):
+            ok = hmac.compare_digest(record.token_hash, _legacy_hash_token(token))
+            needs_upgrade = ok
         if ok:
+            if needs_upgrade:
+                record.token_hash = token_hash
             record.last_seen_at_ms = _now_ms()
             self.save()
         return ok
@@ -682,8 +722,21 @@ class R1HermesAdapter:
         )
 
 
-def _hash_token(token: str) -> str:
+def _hash_token(token: str, key: bytes) -> str:
+    digest = hmac.new(key, token.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{DIGEST_PREFIX}{digest}"
+
+
+def _legacy_hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _is_legacy_token_hash(token_hash: str) -> bool:
+    if token_hash.startswith(DIGEST_PREFIX):
+        return False
+    if len(token_hash) != 64:
+        return False
+    return all(char in "0123456789abcdefABCDEF" for char in token_hash)
 
 
 def _validate_config(config: R1HermesConfig) -> None:
