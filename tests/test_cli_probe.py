@@ -602,6 +602,10 @@ def test_serve_command_passes_concurrency_options(monkeypatch, tmp_path):
             "5",
             "--per-device-concurrency",
             "2",
+            "--idempotency-cache-max-entries",
+            "11",
+            "--idempotency-cache-ttl-seconds",
+            "22",
         ],
     )
 
@@ -609,6 +613,8 @@ def test_serve_command_passes_concurrency_options(monkeypatch, tmp_path):
 
     assert captured["config"].global_concurrency == 5
     assert captured["config"].per_device_concurrency == 2
+    assert captured["config"].idempotency_cache_max_entries == 11
+    assert captured["config"].idempotency_cache_ttl_seconds == 22
 
 
 def test_hermes_command_reads_concurrency_from_env(monkeypatch, tmp_path):
@@ -628,6 +634,8 @@ def test_hermes_command_reads_concurrency_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
     monkeypatch.setenv("R1_HERMES_GLOBAL_CONCURRENCY", "6")
     monkeypatch.setenv("R1_HERMES_PER_DEVICE_CONCURRENCY", "3")
+    monkeypatch.setenv("R1_HERMES_IDEMPOTENCY_CACHE_MAX_ENTRIES", "44")
+    monkeypatch.setenv("R1_HERMES_IDEMPOTENCY_CACHE_TTL_SECONDS", "55")
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -642,6 +650,8 @@ def test_hermes_command_reads_concurrency_from_env(monkeypatch, tmp_path):
 
     assert captured["config"].global_concurrency == 6
     assert captured["config"].per_device_concurrency == 3
+    assert captured["config"].idempotency_cache_max_entries == 44
+    assert captured["config"].idempotency_cache_ttl_seconds == 55
     assert isinstance(captured["message_handler"], cli.HermesCliRunner)
 
 

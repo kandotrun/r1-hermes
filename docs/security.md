@@ -88,6 +88,14 @@ The same opt-in can be supplied as `R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1` for 
 configuration. Do not use the override to work around public exposure, weak pairing controls, or an
 unclear physical-device ownership model.
 
+Rabbit/OpenClaw clients may retry `chat.send` after a timeout or network hiccup. The adapter treats
+`idempotencyKey` as a per-device and per-`sessionKey` run key and keeps a bounded in-memory cache for
+in-flight and recently completed keys. An in-flight duplicate receives `BUSY_DUPLICATE` before any
+Hermes subprocess or native handler call; a completed duplicate receives a duplicate acknowledgement
+and replay of the cached final chat event. This avoids repeating physical-device commands while
+keeping memory bounded by `R1_HERMES_IDEMPOTENCY_CACHE_MAX_ENTRIES`,
+`R1_HERMES_IDEMPOTENCY_CACHE_TTL_SECONDS`, and the matching server CLI options.
+
 The native Gateway prototype in `src/r1_hermes/native_gateway.py` preserves the same preconditions:
 it converts only authenticated `chat.send` text into a gateway-style message event, excludes message
 text from event `repr()`, stores no bearer token in metadata, sanitizes platform toolset metadata so

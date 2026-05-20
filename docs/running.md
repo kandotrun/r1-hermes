@@ -270,6 +270,8 @@ What works now:
 - Local `safe` toolset by default, with explicit `--toolsets` expansion and a separate
   high-impact override for host/file/automation control surfaces.
 - Global and per-device in-flight caps before Hermes subprocess execution.
+- Per-device/session `chat.send` dedupe by `idempotencyKey`, returning `BUSY_DUPLICATE` for an
+  active duplicate and replaying the cached final event for a recent completed duplicate.
 - Generic started/final/error chat events back to the active WebSocket.
 
 What does not work in the standalone bridge:

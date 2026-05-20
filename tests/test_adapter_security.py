@@ -1538,6 +1538,217 @@ async def test_per_device_concurrency_still_applies_when_global_capacity_remains
 
 
 @pytest.mark.asyncio
+async def test_duplicate_inflight_idempotency_key_does_not_start_second_run(tmp_path):
+    sink = BlockingHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    first_ws = FakeWebSocket()
+    duplicate_ws = FakeWebSocket()
+    frame = chat_frame(rid="chat-duplicate", message="run once")
+
+    first_task = asyncio.create_task(
+        adapter._handle_chat_send(first_ws, "chat-duplicate", frame, "r1-duplicate")
+    )
+    await sink.wait_for_calls(1)
+
+    await asyncio.wait_for(
+        adapter._handle_chat_send(
+            duplicate_ws,
+            "chat-duplicate-retry",
+            frame,
+            "r1-duplicate",
+        ),
+        timeout=0.2,
+    )
+
+    assert duplicate_ws.frames == [
+        {
+            "type": "res",
+            "id": "chat-duplicate-retry",
+            "ok": False,
+            "error": {
+                "code": "BUSY_DUPLICATE",
+                "message": "duplicate request is already running",
+            },
+        }
+    ]
+    assert sink.messages == [
+        {"text": "run once", "device_id": "r1-duplicate", "session_key": "main"}
+    ]
+
+    sink.release.set()
+    await first_task
+    assert first_ws.frames[0]["ok"] is True
+    assert first_ws.frames[1]["payload"]["state"] == "started"
+    assert first_ws.frames[2]["payload"]["state"] == "final"
+
+
+@pytest.mark.asyncio
+async def test_completed_idempotency_key_replays_final_event_without_second_run(tmp_path):
+    sink = FakeHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    first_ws = FakeWebSocket()
+    duplicate_ws = FakeWebSocket()
+    frame = chat_frame(rid="chat-complete", message="run once")
+
+    await adapter._handle_chat_send(first_ws, "chat-complete", frame, "r1-duplicate")
+    await adapter._handle_chat_send(
+        duplicate_ws,
+        "chat-complete-retry",
+        frame,
+        "r1-duplicate",
+    )
+
+    assert sink.messages == [
+        {"text": "run once", "device_id": "r1-duplicate", "session_key": "main"}
+    ]
+    assert duplicate_ws.frames[0] == {
+        "type": "res",
+        "id": "chat-complete-retry",
+        "ok": True,
+        "payload": {"runId": "run-chat-complete", "status": "completed", "duplicate": True},
+    }
+    assert duplicate_ws.frames[1] == first_ws.frames[2]
+
+
+@pytest.mark.asyncio
+async def test_different_idempotency_keys_run_independently(tmp_path):
+    sink = FakeHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+
+    for rid, message in (("chat-unique-a", "first"), ("chat-unique-b", "second")):
+        ws = FakeWebSocket()
+        await adapter._handle_chat_send(ws, rid, chat_frame(rid=rid, message=message), "r1-unique")
+        assert ws.frames[0]["ok"] is True
+        assert ws.frames[2]["payload"]["state"] == "final"
+
+    assert sink.messages == [
+        {"text": "first", "device_id": "r1-unique", "session_key": "main"},
+        {"text": "second", "device_id": "r1-unique", "session_key": "main"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_idempotency_cache_is_bounded_and_session_scoped(tmp_path):
+    sink = FakeHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+            idempotency_cache_max_entries=1,
+            idempotency_cache_ttl_seconds=60,
+        ),
+        message_handler=sink,
+    )
+
+    first_ws = FakeWebSocket()
+    await adapter._handle_chat_send(
+        first_ws,
+        "chat-scoped",
+        chat_frame(rid="chat-scoped", message="main", session_key="main"),
+        "r1-scoped",
+    )
+
+    second_ws = FakeWebSocket()
+    await adapter._handle_chat_send(
+        second_ws,
+        "chat-scoped-alt",
+        chat_frame(rid="chat-scoped", message="other session", session_key="other"),
+        "r1-scoped",
+    )
+
+    assert second_ws.frames[0]["payload"] == {"runId": "run-chat-scoped", "status": "started"}
+    assert len(adapter._idempotency_cache) == 1
+    assert sink.messages == [
+        {"text": "main", "device_id": "r1-scoped", "session_key": "main"},
+        {"text": "other session", "device_id": "r1-scoped", "session_key": "other"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_idempotency_cache_expires_completed_keys(tmp_path, monkeypatch):
+    clock = {"now": 100.0}
+    monkeypatch.setattr(adapter_module.time, "monotonic", lambda: clock["now"])
+    sink = FakeHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+            idempotency_cache_ttl_seconds=1,
+        ),
+        message_handler=sink,
+    )
+    frame = chat_frame(rid="chat-expired", message="run again after expiry")
+
+    await adapter._handle_chat_send(FakeWebSocket(), "chat-expired", frame, "r1-expired")
+    clock["now"] = 102.0
+    await adapter._handle_chat_send(FakeWebSocket(), "chat-expired-retry", frame, "r1-expired")
+
+    assert sink.messages == [
+        {"text": "run again after expiry", "device_id": "r1-expired", "session_key": "main"},
+        {"text": "run again after expiry", "device_id": "r1-expired", "session_key": "main"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_idempotency_cache_can_be_disabled_by_setting_zero_entries(tmp_path):
+    sink = FakeHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+            idempotency_cache_max_entries=0,
+        ),
+        message_handler=sink,
+    )
+    frame = chat_frame(rid="chat-disabled", message="not cached")
+
+    await adapter._handle_chat_send(FakeWebSocket(), "chat-disabled", frame, "r1-disabled")
+    await adapter._handle_chat_send(FakeWebSocket(), "chat-disabled-retry", frame, "r1-disabled")
+
+    assert len(adapter._idempotency_cache) == 0
+    assert sink.messages == [
+        {"text": "not cached", "device_id": "r1-disabled", "session_key": "main"},
+        {"text": "not cached", "device_id": "r1-disabled", "session_key": "main"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_global_inflight_counter_is_released_after_timeout_error(
     unused_tcp_port,
     tmp_path,
@@ -1655,11 +1866,15 @@ def test_config_from_env_reads_global_concurrency(monkeypatch, tmp_path):
     monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-token-for-tests")
     monkeypatch.setenv("R1_HERMES_GLOBAL_CONCURRENCY", "4")
     monkeypatch.setenv("R1_HERMES_PER_DEVICE_CONCURRENCY", "2")
+    monkeypatch.setenv("R1_HERMES_IDEMPOTENCY_CACHE_MAX_ENTRIES", "12")
+    monkeypatch.setenv("R1_HERMES_IDEMPOTENCY_CACHE_TTL_SECONDS", "34")
 
     config = R1HermesConfig.from_env(state_dir=tmp_path)
 
     assert config.global_concurrency == 4
     assert config.per_device_concurrency == 2
+    assert config.idempotency_cache_max_entries == 12
+    assert config.idempotency_cache_ttl_seconds == 34
 
 
 def test_config_rejects_invalid_concurrency(tmp_path):
