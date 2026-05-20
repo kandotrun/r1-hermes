@@ -7,6 +7,9 @@ from typing import Any
 
 from aiohttp import ClientSession, WSMsgType
 
+CONNECT_METHODS = {"connect", "gateway.connect"}
+CONNECT_ACK_EVENTS = {"connect.ok", "node.pair.approved"}
+
 
 class R1ProbeError(RuntimeError):
     """Raised when a Rabbit R1/OpenClaw probe flow fails."""
@@ -31,8 +34,12 @@ class R1ProbeClient:
     device_id: str = "r1-probe"
     timeout_seconds: float = 30
     client_name: str = "r1-hermes probe"
+    connect_method: str = "connect"
 
     async def send_message(self, message: str, *, session_key: str = "main") -> R1ProbeResult:
+        if self.connect_method not in CONNECT_METHODS:
+            raise R1ProbeError("unsupported connect method")
+
         timeout = aiohttp_timeout(self.timeout_seconds)
         async with ClientSession(timeout=timeout) as session:
             async with session.ws_connect(self.url) as ws:
@@ -47,7 +54,7 @@ class R1ProbeClient:
                     {
                         "type": "req",
                         "id": "connect-1",
-                        "method": "connect",
+                        "method": self.connect_method,
                         "params": {
                             "auth": {"token": self.token},
                             "device": {"id": self.device_id},
@@ -55,7 +62,7 @@ class R1ProbeClient:
                         },
                     }
                 )
-                hello = await self._receive_json(ws)
+                hello = await self._receive_response(ws, expected="connect response")
                 if not hello.get("ok"):
                     raise R1ProbeError(_error_text(hello))
                 device_token = str(
@@ -78,7 +85,7 @@ class R1ProbeClient:
                         },
                     }
                 )
-                ack = await self._receive_json(ws)
+                ack = await self._receive_response(ws, expected="chat.send acknowledgement")
                 if not ack.get("ok"):
                     raise R1ProbeError(_error_text(ack))
                 event = await self._receive_chat_event(ws)
@@ -102,6 +109,15 @@ class R1ProbeClient:
                     raise R1ProbeError(_chat_event_error_text(frame))
                 if state in {"final", ""}:
                     return frame
+
+    async def _receive_response(self, ws, *, expected: str) -> dict[str, Any]:
+        while True:
+            frame = await self._receive_json(ws, expected=expected)
+            if frame.get("type") == "res":
+                return frame
+            if frame.get("type") == "event" and frame.get("event") in CONNECT_ACK_EVENTS:
+                continue
+            raise R1ProbeError(f"expected {expected}")
 
     async def _receive_json(self, ws, *, expected: str = "gateway response") -> dict[str, Any]:
         try:

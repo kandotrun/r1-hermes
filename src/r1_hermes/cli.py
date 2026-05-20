@@ -80,6 +80,12 @@ def main() -> None:
     probe.add_argument("--session-key", default="main")
     probe.add_argument("--message", required=True)
     probe.add_argument("--timeout", type=float, default=30.0)
+    probe.add_argument(
+        "--connect-method",
+        choices=["connect", "gateway.connect"],
+        default="connect",
+        help="Handshake method to exercise during the probe",
+    )
 
     args = parser.parse_args()
     if args.command in {"payload", "qr", "probe"} and not args.token:
@@ -128,6 +134,7 @@ def main() -> None:
                 token=args.token,
                 device_id=args.device_id,
                 timeout_seconds=args.timeout,
+                connect_method=args.connect_method,
             ).send_message(args.message, session_key=args.session_key)
         )
         print(result.response_text)

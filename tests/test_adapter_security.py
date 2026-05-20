@@ -1,11 +1,14 @@
 import json
 import stat
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
 from aiohttp import ClientSession, WSMsgType
 
 from r1_hermes.adapter import R1HermesAdapter, R1HermesConfig
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "r1_payloads"
 
 
 class FakeHermesSink:
@@ -57,6 +60,17 @@ async def ws_connect(base_url: str):
     challenge = await ws.receive_json()
     assert challenge["event"] == "connect.challenge"
     return session, ws
+
+
+def load_fixture(name: str):
+    return json.loads((FIXTURE_DIR / name).read_text())
+
+
+def fixture_with_gateway_token(frame: dict):
+    serialized = json.dumps(frame)
+    return json.loads(
+        serialized.replace("DUMMY_GATEWAY_TOKEN_DO_NOT_USE", "gateway-token-for-tests")
+    )
 
 
 @pytest.mark.asyncio
@@ -178,6 +192,99 @@ async def test_authenticated_chat_send_runs_agent_once(running_adapter):
         assert sink.messages == [{"text": "hello", "device_id": "r1-test", "session_key": "main"}]
     finally:
         await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_device_id", "expected_ack_events"),
+    [
+        ("connect_official_helper.json", "r1-official-helper", []),
+        (
+            "gateway_connect_community_shim.json",
+            "r1-community-shim",
+            ["connect.ok", "node.pair.approved"],
+        ),
+    ],
+)
+async def test_connect_frame_variants_authenticate_and_allow_chat_send(
+    running_adapter,
+    fixture_name,
+    expected_device_id,
+    expected_ack_events,
+):
+    _adapter, sink, base_url = running_adapter
+    frame = fixture_with_gateway_token(load_fixture(fixture_name))
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_json(frame)
+
+        hello = await ws.receive_json()
+        assert hello["ok"] is True
+        device_token = hello["payload"]["auth"]["deviceToken"]
+        assert device_token
+
+        for expected_event in expected_ack_events:
+            ack_event = await ws.receive_json()
+            serialized_event = json.dumps(ack_event)
+            assert ack_event["type"] == "event"
+            assert ack_event["event"] == expected_event
+            assert ack_event["payload"]["deviceId"] == expected_device_id
+            assert device_token not in serialized_event
+            assert "gateway-token-for-tests" not in serialized_event
+
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "chat-variant-1",
+                "method": "chat.send",
+                "params": {
+                    "message": "hello from variant",
+                    "sessionKey": "variant-session",
+                    "idempotencyKey": "run-variant-1",
+                },
+            }
+        )
+
+        chat_ack = await ws.receive_json()
+        started = await ws.receive_json()
+        final = await ws.receive_json()
+        serialized_chat_frames = json.dumps([chat_ack, started, final])
+
+        assert chat_ack["ok"] is True
+        assert started["payload"]["state"] == "started"
+        assert final["payload"]["state"] == "final"
+        assert final["payload"]["message"]["content"][0]["text"] == "echo: hello from variant"
+        assert device_token not in serialized_chat_frames
+        assert "gateway-token-for-tests" not in serialized_chat_frames
+        assert sink.messages[-1] == {
+            "text": "hello from variant",
+            "device_id": expected_device_id,
+            "session_key": "variant-session",
+        }
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_connect_rejects_bad_token_without_ack_events_or_agent_run(running_adapter):
+    _adapter, sink, base_url = running_adapter
+    frame = load_fixture("gateway_connect_community_shim.json")
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_json(frame)
+
+        msg = await ws.receive_json()
+        serialized = json.dumps(msg)
+        assert msg["ok"] is False
+        assert msg["error"]["code"] == "UNAUTHORIZED"
+        assert "DUMMY_GATEWAY_TOKEN_DO_NOT_USE" not in serialized
+
+        close = await ws.receive()
+        assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
+        assert sink.messages == []
+    finally:
         await session.close()
 
 

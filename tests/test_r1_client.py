@@ -64,10 +64,39 @@ async def test_probe_client_can_reuse_device_token(running_gateway):
 
 
 @pytest.mark.asyncio
+async def test_probe_client_can_use_gateway_connect_variant(running_gateway):
+    client = R1ProbeClient(
+        url=running_gateway,
+        token="probe-token",
+        device_id="r1-gateway-probe",
+        connect_method="gateway.connect",
+    )
+
+    result = await client.send_message("hello via gateway.connect", session_key="variant")
+
+    assert result.connected is True
+    assert result.device_token
+    assert result.response_text == "echo: r1-gateway-probe/variant: hello via gateway.connect"
+
+
+@pytest.mark.asyncio
 async def test_probe_client_reports_auth_failure(running_gateway):
     client = R1ProbeClient(url=running_gateway, token="wrong", device_id="r1-probe")
 
     with pytest.raises(R1ProbeError, match="UNAUTHORIZED"):
+        await client.send_message("hello")
+
+
+@pytest.mark.asyncio
+async def test_probe_client_rejects_unsupported_connect_method_before_network(running_gateway):
+    client = R1ProbeClient(
+        url=running_gateway,
+        token="probe-token",
+        device_id="r1-probe",
+        connect_method="node.pair.approved",
+    )
+
+    with pytest.raises(R1ProbeError, match="unsupported connect method"):
         await client.send_message("hello")
 
 

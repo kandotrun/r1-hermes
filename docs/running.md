@@ -45,6 +45,16 @@ Before scanning with the real device, probe the exact WebSocket flow from this m
 r1-hermes probe --url ws://100.x.y.z:18789/ --message 'Reply with OK from Hermes'
 ```
 
+The default probe uses the standard `connect` handshake. To smoke-test the OpenClaw/Rabbit
+`gateway.connect` variant and its compatibility acknowledgement events, run:
+
+```bash
+r1-hermes probe \
+  --url ws://100.x.y.z:18789/ \
+  --connect-method gateway.connect \
+  --message 'Reply with OK from Hermes'
+```
+
 Scan the QR with Rabbit R1. Delete the PNG after pairing:
 
 ```bash

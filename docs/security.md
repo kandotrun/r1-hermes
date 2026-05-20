@@ -37,9 +37,26 @@ env file only, verify the `--ready-file`, and run `r1-hermes probe` before pairi
 
 1. Operator generates a high-entropy gateway token.
 2. Operator builds a Rabbit R1 QR payload containing host, port, protocol, and token.
-3. R1 connects and sends `connect` with the gateway token and `device.id`.
+3. R1 connects and sends `connect` or the compatible `gateway.connect` variant with the gateway
+   token and `device.id`.
 4. Adapter issues a per-device token, stores only its hash, and sends the token to the device.
 5. Future connects may use the device token only with the same `device.id`.
+
+## OpenClaw/Rabbit compatibility scope
+
+The authenticated handshake accepts the standard `connect` method and the OpenClaw/Rabbit
+`gateway.connect` method. Both methods use the same parser, gateway-token/device-token checks,
+device-token issuance, device ID binding, timeout, and unauthenticated request boundary.
+
+After successful `gateway.connect`, the gateway still returns the existing `hello-ok` response and
+also emits compatibility acknowledgement events named `connect.ok` and `node.pair.approved`. Those
+events intentionally contain only acknowledgement metadata such as `ok`, `deviceId`, and timestamp;
+they do not include the gateway token or issued device token. Failed or malformed handshakes do not
+emit acknowledgement events and do not invoke Hermes.
+
+This project does not implement unauthenticated pairing, browser admin pairing, arbitrary method
+forwarding, binary capture replay, or non-chat Rabbit services. Unsupported methods continue to
+receive a generic `UNKNOWN_METHOD` response after authentication.
 
 ## QR lifecycle
 
