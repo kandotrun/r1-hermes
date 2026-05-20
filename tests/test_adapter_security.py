@@ -90,6 +90,33 @@ async def test_connect_requires_gateway_token(running_adapter):
 
 
 @pytest.mark.asyncio
+async def test_connect_accepts_sanitized_payload_aliases(running_adapter):
+    _adapter, _sink, base_url = running_adapter
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-1",
+                "method": "connect",
+                "payload": {
+                    "authToken": "gateway-token-for-tests",
+                    "deviceId": "r1-alias",
+                    "client": {"name": "OpenClaw"},
+                    "ignored": "field",
+                },
+            }
+        )
+
+        hello = await ws.receive_json()
+        assert hello["ok"] is True
+        assert hello["payload"]["auth"]["deviceToken"]
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
 async def test_authenticated_chat_send_runs_agent_once(running_adapter):
     _adapter, sink, base_url = running_adapter
     session, ws = await ws_connect(base_url)
@@ -133,6 +160,53 @@ async def test_authenticated_chat_send_runs_agent_once(running_adapter):
 
 
 @pytest.mark.asyncio
+async def test_chat_send_accepts_payload_aliases_without_exposing_device_token(running_adapter):
+    _adapter, sink, base_url = running_adapter
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-1",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-tests"},
+                    "device": {"id": "r1-alias-chat"},
+                },
+            }
+        )
+        hello = await ws.receive_json()
+        device_token = hello["payload"]["auth"]["deviceToken"]
+
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "chat-1",
+                "method": "chat.send",
+                "payload": {
+                    "text": "hello aliases",
+                    "session": {"id": "alias-session"},
+                    "requestId": "run-alias",
+                    "auth": {"deviceToken": device_token},
+                },
+            }
+        )
+
+        ack = await ws.receive_json()
+        event = await ws.receive_json()
+        serialized = json.dumps([ack, event])
+        assert ack["ok"] is True
+        assert ack["payload"]["runId"] == "run-alias"
+        assert device_token not in serialized
+        assert sink.messages == [
+            {"text": "hello aliases", "device_id": "r1-alias-chat", "session_key": "alias-session"}
+        ]
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
 async def test_device_token_is_bound_to_original_device_id(running_adapter):
     adapter, _sink, base_url = running_adapter
     session, ws = await ws_connect(base_url)
@@ -170,6 +244,97 @@ async def test_device_token_is_bound_to_original_device_id(running_adapter):
         assert "r1-attacker" not in adapter.state.devices
     finally:
         await session2.close()
+
+
+@pytest.mark.asyncio
+async def test_malformed_json_shape_is_rejected_and_does_not_run_agent(running_adapter):
+    _adapter, sink, base_url = running_adapter
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_str(json.dumps(["not", "an", "object"]))
+        msg = await ws.receive_json()
+        assert msg["ok"] is False
+        assert msg["error"]["code"] == "BAD_REQUEST"
+        assert sink.messages == []
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_malformed_chat_payload_is_rejected_without_token_leak_or_agent_run(
+    running_adapter,
+):
+    _adapter, sink, base_url = running_adapter
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-1",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-tests"},
+                    "device": {"id": "r1-malformed"},
+                },
+            }
+        )
+        assert (await ws.receive_json())["ok"] is True
+
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "chat-malformed",
+                "method": "chat.send",
+                "payload": ["DUMMY_DEVICE_TOKEN_DO_NOT_USE"],
+            }
+        )
+        msg = await ws.receive_json()
+        serialized = json.dumps(msg)
+        assert msg["ok"] is False
+        assert msg["error"]["code"] == "BAD_REQUEST"
+        assert "DUMMY_DEVICE_TOKEN_DO_NOT_USE" not in serialized
+        assert sink.messages == []
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_unknown_method_does_not_echo_secret_or_run_agent(running_adapter):
+    _adapter, sink, base_url = running_adapter
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-1",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-tests"},
+                    "device": {"id": "r1-unknown"},
+                },
+            }
+        )
+        assert (await ws.receive_json())["ok"] is True
+
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "unknown-1",
+                "method": "DUMMY_DEVICE_TOKEN_DO_NOT_USE",
+                "params": {"message": "should not run"},
+            }
+        )
+        msg = await ws.receive_json()
+        serialized = json.dumps(msg)
+        assert msg["ok"] is False
+        assert msg["error"]["code"] == "UNKNOWN_METHOD"
+        assert "DUMMY_DEVICE_TOKEN_DO_NOT_USE" not in serialized
+        assert sink.messages == []
+    finally:
+        await ws.close()
+        await session.close()
 
 
 @pytest.mark.asyncio

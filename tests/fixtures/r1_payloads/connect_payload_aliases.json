@@ -1,0 +1,15 @@
+{
+  "type": "req",
+  "id": "connect-sample-001",
+  "method": "connect",
+  "payload": {
+    "authToken": "DUMMY_GATEWAY_TOKEN_DO_NOT_USE",
+    "deviceId": "r1-sanitized-capture",
+    "client": {
+      "name": "OpenClaw"
+    },
+    "unknownCaptureField": {
+      "ignored": true
+    }
+  }
+}
