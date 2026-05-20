@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -43,9 +44,13 @@ async def running_native_adapter(unused_tcp_port, tmp_path):
 async def ws_connect(base_url: str):
     session = ClientSession()
     ws = await session.ws_connect(base_url.replace("http", "ws") + "/")
-    challenge = await ws.receive_json()
+    challenge = await receive_json(ws)
     assert challenge["event"] == "connect.challenge"
     return session, ws
+
+
+async def receive_json(ws, *, timeout: float = 5.0):
+    return await asyncio.wait_for(ws.receive_json(), timeout=timeout)
 
 
 def test_chat_send_becomes_gateway_message_event_without_secret_metadata():
@@ -111,13 +116,13 @@ async def test_native_adapter_auth_rejects_before_gateway_pipeline(running_nativ
                 },
             }
         )
-        msg = await ws.receive_json()
+        msg = await receive_json(ws)
         serialized = json.dumps(msg)
         assert msg["ok"] is False
         assert msg["error"]["code"] == "UNAUTHORIZED"
         assert "wrong-token" not in serialized
         assert pipeline.events == []
-        close = await ws.receive()
+        close = await asyncio.wait_for(ws.receive(), timeout=5.0)
         assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
     finally:
         await session.close()
@@ -155,7 +160,7 @@ async def test_native_adapter_allowed_device_policy_blocks_unlisted_devices(
                 },
             }
         )
-        msg = await ws.receive_json()
+        msg = await receive_json(ws)
         serialized = json.dumps(msg)
         assert msg["ok"] is False
         assert msg["error"]["code"] == "UNAUTHORIZED"
@@ -166,6 +171,81 @@ async def test_native_adapter_allowed_device_policy_blocks_unlisted_devices(
         if session is not None:
             await session.close()
         await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_native_adapter_rejects_second_connect_without_changing_active_device(
+    running_native_adapter,
+):
+    adapter, _pipeline, base_url = running_native_adapter
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-1",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-native-tests"},
+                    "device": {"id": "r1-original"},
+                },
+            }
+        )
+        assert (await receive_json(ws))["ok"] is True
+
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-2",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-native-tests"},
+                    "device": {"id": "r1-replacement"},
+                },
+            }
+        )
+        msg = await receive_json(ws)
+        assert msg["ok"] is False
+        assert msg["error"]["code"] == "ALREADY_CONNECTED"
+
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "chat-original",
+                "method": "chat.send",
+                "params": {
+                    "message": "activate original",
+                    "sessionKey": "main",
+                    "idempotencyKey": "native-run-original",
+                },
+            }
+        )
+        assert (await receive_json(ws))["ok"] is True
+        assert (await receive_json(ws))["payload"]["state"] == "started"
+        assert (await receive_json(ws))["payload"]["state"] == "final"
+
+        assert (
+            await adapter.send_text(
+                device_id="r1-original",
+                session_key="main",
+                text="original still active",
+            )
+            is True
+        )
+        assert (await receive_json(ws))["payload"]["message"]["content"][0]["text"] == (
+            "original still active"
+        )
+        assert (
+            await adapter.send_text(
+                device_id="r1-replacement",
+                session_key="main",
+                text="must not send",
+            )
+            is False
+        )
+    finally:
+        await ws.close()
+        await session.close()
 
 
 @pytest.mark.asyncio
@@ -186,7 +266,7 @@ async def test_native_adapter_chat_send_uses_gateway_pipeline_and_returns_reply_
                 },
             }
         )
-        assert (await ws.receive_json())["ok"] is True
+        assert (await receive_json(ws))["ok"] is True
 
         await ws.send_json(
             {
@@ -201,9 +281,9 @@ async def test_native_adapter_chat_send_uses_gateway_pipeline_and_returns_reply_
             }
         )
 
-        ack = await ws.receive_json()
-        started = await ws.receive_json()
-        final = await ws.receive_json()
+        ack = await receive_json(ws)
+        started = await receive_json(ws)
+        final = await receive_json(ws)
         serialized = json.dumps([ack, started, final])
 
         assert ack["ok"] is True
@@ -253,7 +333,7 @@ async def test_native_send_is_noop_without_active_socket_and_emits_on_active_ses
                 },
             }
         )
-        assert (await ws.receive_json())["ok"] is True
+        assert (await receive_json(ws))["ok"] is True
         await ws.send_json(
             {
                 "type": "req",
@@ -261,30 +341,30 @@ async def test_native_send_is_noop_without_active_socket_and_emits_on_active_ses
                 "method": "chat.send",
                 "params": {
                     "message": "activate session",
-                    "sessionKey": "main",
+                    "sessionKey": "main/admin",
                     "idempotencyKey": "native-run-send",
                 },
             }
         )
-        assert (await ws.receive_json())["ok"] is True
-        assert (await ws.receive_json())["payload"]["state"] == "started"
-        assert (await ws.receive_json())["payload"]["state"] == "final"
+        assert (await receive_json(ws))["ok"] is True
+        assert (await receive_json(ws))["payload"]["state"] == "started"
+        assert (await receive_json(ws))["payload"]["state"] == "final"
 
         assert (
             await adapter.send_text(
                 device_id="r1-native-send",
-                session_key="main",
+                session_key="main/admin",
                 text="proactive native reply",
                 run_id="native-proactive-1",
             )
             is True
         )
-        event = await ws.receive_json()
+        event = await receive_json(ws)
         serialized = json.dumps(event)
         assert event["type"] == "event"
         assert event["event"] == "chat"
         assert event["payload"]["runId"] == "native-proactive-1"
-        assert event["payload"]["sessionKey"] == "main"
+        assert event["payload"]["sessionKey"] == "main-admin"
         assert event["payload"]["state"] == "final"
         assert event["payload"]["message"]["content"][0]["text"] == "proactive native reply"
         assert "gateway-token-for-native-tests" not in serialized

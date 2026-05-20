@@ -65,7 +65,7 @@ class R1GatewayMessageBridge:
         message_id: str | None = None,
     ) -> R1GatewayMessageEvent:
         safe_device_id = _safe_component(device_id)
-        safe_session_key = _safe_component(session_key or "main")
+        safe_session_key = self.normalize_session_key(session_key)
         source = f"{self.platform_name}:{safe_device_id}:{safe_session_key}"
         session_id = f"r1:{safe_device_id}:{safe_session_key}"
         return R1GatewayMessageEvent(
@@ -82,6 +82,9 @@ class R1GatewayMessageBridge:
                 "platform_toolsets": self.platform_toolsets,
             },
         )
+
+    def normalize_session_key(self, session_key: str) -> str:
+        return _safe_component(session_key or "main")
 
 
 class R1NativeGatewayAdapter(R1HermesAdapter):
@@ -130,8 +133,9 @@ class R1NativeGatewayAdapter(R1HermesAdapter):
     async def _on_chat_session_active(
         self, ws: web.WebSocketResponse, *, device_id: str, session_key: str
     ) -> None:
+        safe_session_key = self.bridge.normalize_session_key(session_key)
         async with self._active_socket_lock:
-            self._active_sockets[(_safe_component(device_id), _safe_component(session_key))] = ws
+            self._active_sockets[(_safe_component(device_id), safe_session_key)] = ws
 
     async def _on_ws_closed(self, ws: web.WebSocketResponse, *, device_id: str) -> None:
         safe_device_id = _safe_component(device_id)
@@ -158,7 +162,7 @@ class R1NativeGatewayAdapter(R1HermesAdapter):
         prototype does not queue messages or persist delivery state.
         """
 
-        key = (_safe_component(device_id), _safe_component(session_key or "main"))
+        key = (_safe_component(device_id), self.bridge.normalize_session_key(session_key or "main"))
         async with self._active_socket_lock:
             ws = self._active_sockets.get(key)
             if ws is None or ws.closed:

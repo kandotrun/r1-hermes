@@ -283,9 +283,15 @@ class R1HermesAdapter:
             return device_id, authenticated
 
         if method in CONNECT_METHODS:
-            next_device_id, next_authenticated = await self._handle_connect(ws, rid, frame)
             if authenticated:
-                return next_device_id or device_id, True
+                await _send_error(
+                    ws,
+                    rid,
+                    "ALREADY_CONNECTED",
+                    "connect must be done before authentication; reconnect required",
+                )
+                return device_id, authenticated
+            next_device_id, next_authenticated = await self._handle_connect(ws, rid, frame)
             return next_device_id, next_authenticated
         if not authenticated:
             await _send_error(ws, rid, "UNAUTHENTICATED", "connect required before requests")
@@ -409,31 +415,30 @@ class R1HermesAdapter:
 
         run_id = str(chat_request.idempotency_key or rid or secrets.token_hex(8))
         session_key = chat_request.session_key
-        await self._on_chat_session_active(ws, device_id=device_id, session_key=session_key)
-        await ws.send_json(
-            {
-                "type": "res",
-                "id": rid,
-                "ok": True,
-                "payload": {"runId": run_id, "status": "started"},
-            }
-        )
-        await ws.send_json(
-            {
-                "type": "event",
-                "event": "chat",
-                "payload": {
-                    "runId": run_id,
-                    "sessionKey": session_key,
-                    "seq": 1,
-                    "state": "started",
-                },
-            }
-        )
-
         response = ""
         error: ChatRunError | None = None
         try:
+            await self._on_chat_session_active(ws, device_id=device_id, session_key=session_key)
+            await ws.send_json(
+                {
+                    "type": "res",
+                    "id": rid,
+                    "ok": True,
+                    "payload": {"runId": run_id, "status": "started"},
+                }
+            )
+            await ws.send_json(
+                {
+                    "type": "event",
+                    "event": "chat",
+                    "payload": {
+                        "runId": run_id,
+                        "sessionKey": session_key,
+                        "seq": 1,
+                        "state": "started",
+                    },
+                }
+            )
             try:
                 response = await self.message_handler(
                     message_text, device_id=device_id, session_key=session_key
