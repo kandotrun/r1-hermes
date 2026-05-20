@@ -17,7 +17,7 @@ import secrets
 print(secrets.token_urlsafe(32))
 PY
 )"
-r1-hermes hermes --host 127.0.0.1 --port 18789
+r1-hermes hermes --host 127.0.0.1 --port 18789 --ready-file /tmp/r1-hermes.ready
 ```
 
 In another terminal, verify Hermes itself is available:
@@ -33,6 +33,12 @@ Pick the narrowest reachable address. Tailscale is preferred over broad LAN expo
 ```bash
 r1-hermes hermes --host 100.x.y.z --port 18789
 r1-hermes qr --host 100.x.y.z --port 18789 --protocol ws --output ./r1-hermes-secret.png
+```
+
+Before scanning with the real device, probe the exact WebSocket flow from this machine:
+
+```bash
+r1-hermes probe --url ws://100.x.y.z:18789/ --message 'Reply with OK from Hermes'
 ```
 
 Scan the QR with Rabbit R1. Delete the PNG after pairing:

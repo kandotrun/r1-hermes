@@ -45,7 +45,7 @@ PY
 By default the gateway binds to localhost and calls `hermes chat --quiet` with the `safe` toolset.
 
 ```bash
-r1-hermes hermes --host 127.0.0.1 --port 18789
+r1-hermes hermes --host 127.0.0.1 --port 18789 --ready-file /tmp/r1-hermes.ready
 ```
 
 Useful options:
@@ -73,6 +73,18 @@ r1-hermes qr --host 100.x.y.z --port 18789 --protocol ws --output ./r1-hermes-se
 ```
 
 The QR contains the bearer token. Treat the PNG as a secret and delete it after pairing.
+
+## 4. Probe the running gateway before scanning with R1
+
+The `probe` command simulates the Rabbit R1 WebSocket flow: challenge, connect, `chat.send`, and final chat event.
+
+```bash
+r1-hermes probe \
+  --url ws://100.x.y.z:18789/ \
+  --message 'Reply with OK from Hermes'
+```
+
+It prints only the assistant response; it does not print the issued device token.
 
 ## Standalone demo gateway
 

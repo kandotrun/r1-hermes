@@ -8,6 +8,7 @@ from pathlib import Path
 from .adapter import R1HermesAdapter, R1HermesConfig
 from .hermes_runner import HermesCliRunner
 from .qr import build_pairing_payload, write_qr_png
+from .r1_client import R1ProbeClient
 
 
 async def _demo_handler(text: str, *, device_id: str, session_key: str) -> str:
@@ -18,6 +19,11 @@ def add_server_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--state-dir", default=str(Path.home() / ".r1-hermes"))
     parser.add_argument("--host", default=os.environ.get("R1_HERMES_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("R1_HERMES_PORT", "18789")))
+    parser.add_argument(
+        "--ready-file",
+        default="",
+        help="Write this file after the gateway starts; useful for smoke tests and supervisors",
+    )
 
 
 def main() -> None:
@@ -53,8 +59,16 @@ def main() -> None:
     qr.add_argument("--protocol", choices=["ws", "wss"], default="ws")
     qr.add_argument("--output", required=True)
 
+    probe = sub.add_parser("probe", help="Send a Rabbit R1-style probe message to a gateway")
+    probe.add_argument("--url", required=True, help="WebSocket URL, e.g. ws://100.x.y.z:18789/")
+    probe.add_argument("--token", default=os.environ.get("R1_HERMES_GATEWAY_TOKEN", ""))
+    probe.add_argument("--device-id", default="r1-probe")
+    probe.add_argument("--session-key", default="main")
+    probe.add_argument("--message", required=True)
+    probe.add_argument("--timeout", type=float, default=30.0)
+
     args = parser.parse_args()
-    if args.command in {"payload", "qr"} and not args.token:
+    if args.command in {"payload", "qr", "probe"} and not args.token:
         raise SystemExit("--token or R1_HERMES_GATEWAY_TOKEN is required")
     if args.command in {"serve", "hermes"}:
         token = os.environ.get("R1_HERMES_GATEWAY_TOKEN", "")
@@ -76,7 +90,9 @@ def main() -> None:
                 continue_sessions=not args.no_continue,
             )
         adapter = R1HermesAdapter(config, message_handler=message_handler)
-        asyncio.run(_run_forever(adapter))
+        asyncio.run(
+            _run_forever(adapter, ready_file=Path(args.ready_file) if args.ready_file else None)
+        )
     elif args.command == "payload":
         print(
             build_pairing_payload(
@@ -89,10 +105,23 @@ def main() -> None:
         )
         path = write_qr_png(payload_text, Path(args.output))
         print(f"Wrote secret QR PNG: {path}")
+    elif args.command == "probe":
+        result = asyncio.run(
+            R1ProbeClient(
+                url=args.url,
+                token=args.token,
+                device_id=args.device_id,
+                timeout_seconds=args.timeout,
+            ).send_message(args.message, session_key=args.session_key)
+        )
+        print(result.response_text)
 
 
-async def _run_forever(adapter: R1HermesAdapter) -> None:
+async def _run_forever(adapter: R1HermesAdapter, *, ready_file: Path | None = None) -> None:
     await adapter.start()
+    if ready_file is not None:
+        ready_file.parent.mkdir(parents=True, exist_ok=True)
+        ready_file.write_text(f"{adapter.config.host}:{adapter.config.port}\n")
     try:
         print(f"r1-hermes listening on {adapter.config.host}:{adapter.config.port}")
         while True:
