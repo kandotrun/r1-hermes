@@ -1,0 +1,16 @@
+{
+  "type": "req",
+  "id": "chat-sample-001",
+  "method": "chat.send",
+  "payload": {
+    "text": "hello Hermes from sanitized capture",
+    "session": {
+      "id": "capture-main"
+    },
+    "requestId": "sample-run-001",
+    "auth": {
+      "deviceToken": "DUMMY_DEVICE_TOKEN_DO_NOT_USE"
+    },
+    "unknownCaptureField": "ignored"
+  }
+}

@@ -15,6 +15,13 @@ from typing import Any
 
 from aiohttp import WSMsgType, web
 
+from .payloads import (
+    PayloadParseError,
+    parse_chat_send_params,
+    parse_connect_params,
+    request_params,
+)
+
 DEFAULT_PORT = 18789
 DEFAULT_HOST = "127.0.0.1"
 STATE_FILE = "devices.json"
@@ -232,15 +239,31 @@ class R1HermesAdapter:
             except json.JSONDecodeError:
                 await _send_error(ws, None, "BAD_JSON", "invalid JSON")
                 continue
+            if not isinstance(frame, dict):
+                await _send_error(ws, None, "BAD_REQUEST", "request frame must be an object")
+                continue
 
             method = frame.get("method")
             rid = frame.get("id")
             if frame.get("type") != "req":
                 await _send_error(ws, rid, "BAD_REQUEST", "expected req frame")
                 continue
+            if not isinstance(method, str) or not method.strip():
+                await _send_error(ws, rid, "BAD_REQUEST", "method is required")
+                continue
 
             if method == "connect":
-                ok, device_id_or_error, device_token = self._authenticate_connect(frame)
+                try:
+                    connect_request = parse_connect_params(request_params(frame))
+                except PayloadParseError as exc:
+                    await _send_error(ws, rid, exc.code, exc.message)
+                    continue
+
+                ok, device_id_or_error, device_token = self._authenticate_connect(
+                    connect_request.auth_token,
+                    device_id=connect_request.device_id,
+                    display_name=connect_request.display_name,
+                )
                 if not ok:
                     await _send_error(ws, rid, "UNAUTHORIZED", device_id_or_error)
                     await ws.close(code=1008, message=b"unauthorized")
@@ -259,7 +282,11 @@ class R1HermesAdapter:
             elif method in {"system-presence", "tools.catalog", "tools.effective"}:
                 await ws.send_json({"type": "res", "id": rid, "ok": True, "payload": {}})
             elif method == "chat.history":
-                params = frame.get("params") or {}
+                try:
+                    params = request_params(frame)
+                except PayloadParseError as exc:
+                    await _send_error(ws, rid, exc.code, exc.message)
+                    continue
                 await ws.send_json(
                     {
                         "type": "res",
@@ -271,22 +298,14 @@ class R1HermesAdapter:
             elif method == "chat.send":
                 await self._handle_chat_send(ws, rid, frame, device_id)
             else:
-                await _send_error(ws, rid, "UNKNOWN_METHOD", f"unsupported method: {method}")
+                await _send_error(ws, rid, "UNKNOWN_METHOD", "unsupported method")
 
         return ws
 
-    def _authenticate_connect(self, frame: dict[str, Any]) -> tuple[bool, str, str]:
-        params = frame.get("params") or {}
-        auth = params.get("auth") or {}
-        supplied = str(auth.get("token") or "")
-        device = params.get("device") or {}
-        device_id = str(device.get("id") or "").strip()
-        if not device_id:
-            return False, "device.id is required", ""
-
+    def _authenticate_connect(
+        self, supplied: str, *, device_id: str, display_name: str
+    ) -> tuple[bool, str, str]:
         if hmac.compare_digest(supplied, self.config.gateway_token):
-            client = params.get("client") or {}
-            display_name = str(client.get("displayName") or "Rabbit R1")[:120]
             return (
                 True,
                 device_id,
@@ -301,11 +320,12 @@ class R1HermesAdapter:
     async def _handle_chat_send(
         self, ws: web.WebSocketResponse, rid: str | None, frame: dict[str, Any], device_id: str
     ) -> None:
-        params = frame.get("params") or {}
-        message_text = str(params.get("message") or "")
-        if not message_text.strip():
-            await _send_error(ws, rid, "EMPTY_MESSAGE", "message is required")
+        try:
+            chat_request = parse_chat_send_params(request_params(frame))
+        except PayloadParseError as exc:
+            await _send_error(ws, rid, exc.code, exc.message)
             return
+        message_text = chat_request.message
         if len(message_text) > self.config.max_message_chars:
             await _send_error(ws, rid, "MESSAGE_TOO_LARGE", "message exceeds limit")
             return
@@ -319,8 +339,8 @@ class R1HermesAdapter:
                 return
             self._inflight_by_device[device_id] += 1
 
-        run_id = str(params.get("idempotencyKey") or rid or secrets.token_hex(8))
-        session_key = str(params.get("sessionKey") or "main")[:120]
+        run_id = str(chat_request.idempotency_key or rid or secrets.token_hex(8))
+        session_key = chat_request.session_key
         await ws.send_json(
             {
                 "type": "res",
