@@ -148,6 +148,66 @@ journalctl --user --vacuum-size=200M
 
 Logs must not contain full gateway tokens, device tokens, QR payloads, or raw authorization headers. Treat unexpected secret material in logs as an incident and rotate the gateway token before reconnecting devices.
 
+## Token rotation and revoke-all
+
+For a leaked gateway token, QR payload, QR PNG, or unknown device-token exposure, stop the service,
+rotate the env-file token, and revoke every paired device in the same local operation. The command
+prints the env-file path and affected device IDs only; it does not print the new gateway token.
+
+Preview first:
+
+```bash
+r1-hermes rotate \
+  --state-dir ~/.local/state/r1-hermes \
+  --env-file ~/.config/r1-hermes/r1-hermes.env \
+  --dry-run
+```
+
+Apply the rotation while the gateway is stopped:
+
+```bash
+systemctl --user stop r1-hermes.service
+r1-hermes rotate \
+  --state-dir ~/.local/state/r1-hermes \
+  --env-file ~/.config/r1-hermes/r1-hermes.env
+systemctl --user start r1-hermes.service
+```
+
+Source the updated env file in a private shell and probe the restarted gateway before scanning a new
+QR. Do not echo the token:
+
+```bash
+set -a
+. ~/.config/r1-hermes/r1-hermes.env
+set +a
+
+r1-hermes probe \
+  --url ws://127.0.0.1:18789/ \
+  --message 'Reply with OK from Hermes'
+```
+
+For a Tailscale direct bind, probe the concrete advertised address instead of `127.0.0.1`. Then
+generate a fresh QR PNG with the same host/port, scan it only on the intended Rabbit R1, and delete
+the PNG after pairing:
+
+```bash
+r1-hermes qr \
+  --host 100.x.y.z \
+  --port 18789 \
+  --protocol ws \
+  --output ./r1-hermes-secret.png
+shred -u ./r1-hermes-secret.png 2>/dev/null || rm -f ./r1-hermes-secret.png
+```
+
+To invalidate all paired devices without rotating the gateway token, run:
+
+```bash
+r1-hermes revoke --state-dir ~/.local/state/r1-hermes --all
+```
+
+Use `--dry-run` to list the affected device IDs before rewriting the state file. The revoke command
+is safe to repeat when no devices are paired.
+
 ## Rollback
 
 Stop and disable the service:
@@ -163,13 +223,11 @@ cp /path/to/known-good/r1-hermes.service ~/.config/systemd/user/r1-hermes.servic
 systemctl --user daemon-reload
 ```
 
-If a token or QR payload may have leaked, rotate the gateway token in `~/.config/r1-hermes/r1-hermes.env`, move the state directory aside so old device tokens are invalidated, and start again:
+If a token or QR payload may have leaked during rollback, use the rotation workflow above instead
+of keeping the old state. For a non-secret rollback that only restores the service unit, start the
+service again after the known-good unit is in place:
 
 ```bash
-systemctl --user stop r1-hermes.service
-mv ~/.local/state/r1-hermes ~/.local/state/r1-hermes.revoked.$(date +%Y%m%d%H%M%S) 2>/dev/null || true
-mkdir -m 700 -p ~/.local/state/r1-hermes
-$EDITOR ~/.config/r1-hermes/r1-hermes.env
 systemctl --user start r1-hermes.service
 ```
 

@@ -353,6 +353,57 @@ def test_revoke_command_removes_device_from_state(monkeypatch, capsys, tmp_path)
     assert "r1-test" not in cli.DeviceState(tmp_path).devices
 
 
+def test_revoke_all_command_removes_all_devices(monkeypatch, capsys, tmp_path):
+    state = cli.DeviceState(tmp_path)
+    token_a = state.issue_device_token("r1-a")
+    token_b = state.issue_device_token("r1-b")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["r1-hermes", "revoke", "--state-dir", str(tmp_path), "--all"],
+    )
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "Revoked 2 device(s): r1-a, r1-b" in out
+    assert token_a not in out
+    assert token_b not in out
+    assert cli.DeviceState(tmp_path).devices == {}
+
+
+def test_revoke_all_command_is_idempotent_with_empty_state(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(
+        "sys.argv",
+        ["r1-hermes", "revoke", "--state-dir", str(tmp_path), "--all"],
+    )
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "No paired devices found; state unchanged." in out
+    assert cli.DeviceState(tmp_path).devices == {}
+
+
+def test_revoke_all_dry_run_lists_device_ids_without_changing_state(
+    monkeypatch, capsys, tmp_path
+):
+    state = cli.DeviceState(tmp_path)
+    token_a = state.issue_device_token("r1-a")
+    token_b = state.issue_device_token("r1-b")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["r1-hermes", "revoke", "--state-dir", str(tmp_path), "--all", "--dry-run"],
+    )
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "Would revoke 2 device(s): r1-a, r1-b" in out
+    assert token_a not in out
+    assert token_b not in out
+    assert sorted(cli.DeviceState(tmp_path).devices) == ["r1-a", "r1-b"]
+
+
 def test_revoke_command_fails_for_unknown_device(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "sys.argv",
@@ -407,6 +458,95 @@ def test_cleanup_command_prunes_expired_devices_without_printing_tokens(
         device_token_idle_timeout_seconds=0,
     ).devices
     assert set(remaining) == {"r1-fresh"}
+
+
+def test_rotate_command_updates_env_file_and_revokes_all_without_printing_token(
+    monkeypatch, capsys, tmp_path
+):
+    state = cli.DeviceState(tmp_path / "state")
+    device_token = state.issue_device_token("r1-a")
+    env_file = tmp_path / "r1-hermes.env"
+    env_file.write_text(
+        "R1_HERMES_GATEWAY_TOKEN=old-dummy-gateway-token\nR1_HERMES_HOST=127.0.0.1\n"
+    )
+    env_file.chmod(0o600)
+    monkeypatch.setattr(cli.secrets, "token_urlsafe", lambda _n: "new-dummy-gateway-token")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "rotate",
+            "--state-dir",
+            str(tmp_path / "state"),
+            "--env-file",
+            str(env_file),
+        ],
+    )
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "Rotated gateway token in" in out
+    assert "Revoked 1 device(s): r1-a" in out
+    assert "new-dummy-gateway-token" not in out
+    assert device_token not in out
+    assert "R1_HERMES_GATEWAY_TOKEN=new-dummy-gateway-token" in env_file.read_text()
+    assert cli.DeviceState(tmp_path / "state").devices == {}
+
+
+def test_rotate_command_requires_token_destination_without_dry_run(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "sys.argv",
+        ["r1-hermes", "rotate", "--state-dir", str(tmp_path)],
+    )
+
+    with pytest.raises(SystemExit, match="--env-file or --print-token is required"):
+        cli.main()
+
+
+def test_rotate_dry_run_does_not_update_env_or_state(monkeypatch, capsys, tmp_path):
+    state = cli.DeviceState(tmp_path / "state")
+    device_token = state.issue_device_token("r1-a")
+    env_file = tmp_path / "r1-hermes.env"
+    env_file.write_text("R1_HERMES_GATEWAY_TOKEN=old-dummy-gateway-token\n")
+    env_file.chmod(0o600)
+    monkeypatch.setattr(cli.secrets, "token_urlsafe", lambda _n: "new-dummy-gateway-token")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "rotate",
+            "--state-dir",
+            str(tmp_path / "state"),
+            "--env-file",
+            str(env_file),
+            "--dry-run",
+        ],
+    )
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "Would generate a new gateway token" in out
+    assert "Would revoke 1 device(s): r1-a" in out
+    assert "new-dummy-gateway-token" not in out
+    assert device_token not in out
+    assert "old-dummy-gateway-token" in env_file.read_text()
+    assert sorted(cli.DeviceState(tmp_path / "state").devices) == ["r1-a"]
+
+
+def test_rotate_print_token_is_explicitly_labeled(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(cli.secrets, "token_urlsafe", lambda _n: "new-dummy-gateway-token")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["r1-hermes", "rotate", "--state-dir", str(tmp_path), "--print-token"],
+    )
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "NEW R1_HERMES_GATEWAY_TOKEN (SECRET): new-dummy-gateway-token" in out
+    assert "No paired devices found; state unchanged." in out
 
 
 def test_serve_command_passes_concurrency_options(monkeypatch, tmp_path):

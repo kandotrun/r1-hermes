@@ -257,6 +257,7 @@ class DeviceState:
 
     def load(self) -> None:
         if not self.path.exists():
+            self.devices = {}
             return
         data = json.loads(self.path.read_text())
         loaded_at_ms = _now_ms()
@@ -285,6 +286,7 @@ class DeviceState:
         os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
 
     def issue_device_token(self, device_id: str, *, display_name: str = "Rabbit R1") -> str:
+        self.load()
         now = _now_ms()
         token = secrets.token_urlsafe(TOKEN_BYTES)
         self.devices[device_id] = DeviceRecord(
@@ -298,6 +300,7 @@ class DeviceState:
         return token
 
     def verify_device_token(self, device_id: str, token: str) -> bool:
+        self.load()
         record = self.devices.get(device_id)
         if not record:
             return False
@@ -318,13 +321,29 @@ class DeviceState:
         self.save()
         return True
 
+    def device_ids(self) -> list[str]:
+        self.load()
+        return sorted(self.devices)
+
     def revoke(self, device_id: str) -> bool:
+        self.load()
         existed = device_id in self.devices
         self.devices.pop(device_id, None)
-        self.save()
+        if existed:
+            self.save()
         return existed
 
+    def revoke_all(self) -> list[str]:
+        self.load()
+        revoked = sorted(self.devices)
+        if not revoked:
+            return []
+        self.devices.clear()
+        self.save()
+        return revoked
+
     def prune_expired(self) -> int:
+        self.load()
         now = _now_ms()
         expired = [
             device_id

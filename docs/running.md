@@ -144,6 +144,18 @@ device token before re-pairing:
 r1-hermes revoke --device-id r1-device-id
 ```
 
+For a QR or gateway-token incident, prefer the one-command rotation workflow so all paired device
+tokens are cleared while the env-file token is replaced:
+
+```bash
+r1-hermes rotate \
+  --state-dir ~/.local/state/r1-hermes \
+  --env-file ~/.config/r1-hermes/r1-hermes.env
+```
+
+Use `r1-hermes revoke --all --dry-run` or `r1-hermes rotate --dry-run` to preview affected device
+IDs without printing token values.
+
 ## Adding real-device compatibility captures
 
 Add only sanitized JSON fixtures under `tests/fixtures/r1_payloads/`. Capture the smallest frame set

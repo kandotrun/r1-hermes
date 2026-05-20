@@ -145,7 +145,15 @@ issuing a fresh QR:
 r1-hermes revoke --device-id r1-device-id
 ```
 
-Then restart the device pairing flow with a newly generated gateway token and a new QR PNG. See
+To revoke every paired device in the state file, use the idempotent all-devices workflow:
+
+```bash
+r1-hermes revoke --all
+```
+
+Use `--dry-run` first to list affected device IDs without printing token values or changing state.
+For gateway-token incidents, use `r1-hermes rotate` to write a fresh token to a local env file and
+clear paired devices in one step, then restart the gateway and generate a new QR PNG. See
 [`docs/security.md`](docs/security.md) for the full incident response checklist.
 
 To remove expired device records from `devices.json` without affecting still-valid pairings:
