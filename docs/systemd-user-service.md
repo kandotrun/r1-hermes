@@ -18,13 +18,13 @@ cannot be used.
 Install the package for the user that will run the service:
 
 ```bash
-python -m pip install --user -e '.[qr]'
+python -m pip install --user '.[qr]'
 ```
 
 Install the unit and create the env file:
 
 ```bash
-mkdir -p ~/.config/systemd/user ~/.config/r1-hermes ~/.local/state/r1-hermes
+mkdir -p ~/.config/systemd/user ~/.config/r1-hermes
 cp packaging/systemd/r1-hermes.service ~/.config/systemd/user/r1-hermes.service
 cp packaging/systemd/r1-hermes.env.example ~/.config/r1-hermes/r1-hermes.env
 chmod 600 ~/.config/r1-hermes/r1-hermes.env
@@ -88,6 +88,43 @@ private, access-controlled monitoring path genuinely needs remote health checks,
 `R1_HERMES_ALLOW_REMOTE_HEALTH=1`. Add `R1_HERMES_HEALTH_DIAGNOSTICS=1` only when the paired count is
 needed for local diagnostics, not for broadly reachable probes.
 
+## Write-path assumptions
+
+The packaged unit uses `ProtectSystem=strict`, `ProtectHome=tmpfs`, `StateDirectory=r1-hermes`,
+`RuntimeDirectory=r1-hermes`, `BindReadOnlyPaths`, and `BindPaths` so the service sees only the home
+subtrees it needs. It also blocks hostname changes, realtime scheduling, namespace creation, and
+high-risk syscall groups. It deliberately avoids `WorkingDirectory=%h`; the working directory is
+`%S/r1-hermes`, which is the systemd user state directory for this service. On a default Linux user
+manager, `%S/r1-hermes` usually resolves to `~/.local/state/r1-hermes`.
+
+The service expects these paths:
+
+- `%h/.config/r1-hermes/r1-hermes.env`: readable env file. systemd reads this before the service
+  sandbox is applied. Keep `R1_HERMES_GATEWAY_TOKEN` here only; do not add token literals to the unit
+  or drop-ins.
+- `%S/r1-hermes`: writable `r1-hermes` state directory for paired-device metadata and the local HMAC
+  key. systemd creates it through `StateDirectory=r1-hermes` with `StateDirectoryMode=0700`.
+- `%t/r1-hermes/ready`: writable runtime readiness file. systemd creates `%t/r1-hermes` through
+  `RuntimeDirectory=r1-hermes` with `RuntimeDirectoryMode=0700`, and removes it when the user service
+  stops.
+- `%h/.local/bin` and `%h/.local/lib`: read-only user install paths for a normal
+  `python -m pip install --user` installation. If your `r1-hermes` executable or Python environment
+  lives elsewhere, add that exact read-only path in a drop-in. Editable installs whose `.pth` files
+  point to a source checkout under another home path need an explicit read-only bind for that source
+  tree, or a non-editable reinstall.
+- `%h/.hermes`: writable Hermes Agent home. The Hermes CLI commonly stores config, provider auth,
+  sessions, checkpoints, and Hermes logs there while `hermes chat --continue ...` runs. This is the
+  remaining broad home exception; keep it to this subtree unless the local Hermes installation uses a
+  different documented home.
+- journald: normal `r1-hermes` service stdout/stderr and audit events. journald storage is managed by
+  the user manager, not by a writable path inside the unit sandbox.
+
+If your Hermes installation stores its config or sessions somewhere other than `%h/.hermes`, add a
+drop-in that replaces `BindPaths` with the exact required directory. If your systemd version or Linux
+kernel cannot use `ProtectHome=tmpfs`, the less restrictive fallback is `ProtectHome=read-only` plus
+`ReadWritePaths` for `%S/r1-hermes`, `%t/r1-hermes`, and the exact Hermes home. Do not loosen the
+service to writable `$HOME`, do not move secrets into `ExecStart`, and keep the command shell-free.
+
 If `r1-hermes` is not installed at `~/.local/bin/r1-hermes`, override `ExecStart` with the exact absolute path and keep the command shell-free:
 
 ```bash
@@ -97,7 +134,7 @@ systemctl --user edit r1-hermes.service
 ```ini
 [Service]
 ExecStart=
-ExecStart=/absolute/path/to/r1-hermes hermes --host ${R1_HERMES_HOST} --port ${R1_HERMES_PORT} --state-dir %h/.local/state/r1-hermes --ready-file %t/r1-hermes/ready --toolsets ${R1_HERMES_TOOLSETS} --timeout ${R1_HERMES_TIMEOUT} --global-concurrency ${R1_HERMES_GLOBAL_CONCURRENCY} --per-device-concurrency ${R1_HERMES_PER_DEVICE_CONCURRENCY}
+ExecStart=/absolute/path/to/r1-hermes hermes --host ${R1_HERMES_HOST} --port ${R1_HERMES_PORT} --state-dir %S/r1-hermes --ready-file %t/r1-hermes/ready --toolsets ${R1_HERMES_TOOLSETS} --timeout ${R1_HERMES_TIMEOUT} --global-concurrency ${R1_HERMES_GLOBAL_CONCURRENCY} --per-device-concurrency ${R1_HERMES_PER_DEVICE_CONCURRENCY}
 ```
 
 ## Enable
@@ -126,6 +163,13 @@ cat "${XDG_RUNTIME_DIR}/r1-hermes/ready"
 ```
 
 The service uses `--ready-file %t/r1-hermes/ready`; systemd removes the old file before each start, and `r1-hermes` writes it only after the gateway starts listening.
+
+Validate the installed or packaged unit when `systemd-analyze` is available:
+
+```bash
+systemd-analyze --user verify ~/.config/systemd/user/r1-hermes.service
+systemd-analyze --user verify packaging/systemd/r1-hermes.service
+```
 
 For local HTTP readiness, `/healthz` is intentionally minimal:
 
@@ -293,6 +337,43 @@ deployment flows.
 set -a
 . ~/.config/r1-hermes/r1-hermes.env
 set +a
+```
+
+## Permission-related startup failures
+
+If the service fails immediately after a sandboxing change, check the unit status first:
+
+```bash
+systemctl --user status r1-hermes.service
+journalctl --user-unit r1-hermes.service --since today -o cat
+```
+
+Common permission failures and fixes:
+
+- `status=226/NAMESPACE`, `EXIT_STATE_DIRECTORY`, or errors creating `%S/r1-hermes`: verify the user
+  manager supports `StateDirectory=` and that `$XDG_STATE_HOME` or `~/.local/state` is owned by the
+  service user.
+- `Failed to set up mount namespacing` or `ProtectHome=tmpfs` errors: verify unprivileged user
+  namespaces are enabled for user services on this host. If they cannot be enabled, use a local
+  drop-in with `ProtectHome=read-only` and a minimal `ReadWritePaths` fallback for `%S/r1-hermes`,
+  `%t/r1-hermes`, and the exact Hermes home.
+- `Permission denied` for `%t/r1-hermes/ready`: keep `RuntimeDirectory=r1-hermes`,
+  `RuntimeDirectoryMode=0700`, and `--ready-file %t/r1-hermes/ready` together. Do not point the ready
+  file at `/tmp` or an arbitrary home path in the packaged service.
+- Hermes starts manually but fails under systemd: confirm Hermes can read and write its configured
+  home. The default bind allowlist includes `%h/.hermes`; add the exact alternate Hermes home to
+  `BindPaths` if your installation uses one.
+- `r1-hermes` is missing or cannot import packages: install it for the same user or override
+  `ExecStart` to the absolute executable path. If the executable lives outside `%h/.local/bin`, keep
+  the target path readable and executable without making all of `$HOME` writable.
+- The env file is rejected or not found: keep it at `%h/.config/r1-hermes/r1-hermes.env`, owned by the
+  service user, with `0600` permissions. Store the gateway token only in that file.
+
+After changing a unit or drop-in, reload and restart:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user restart r1-hermes.service
 ```
 
 ## Logs

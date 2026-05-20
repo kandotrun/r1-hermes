@@ -18,6 +18,28 @@ def test_systemd_service_uses_env_file_without_inline_token() -> None:
     assert "--ready-file" in service_text
 
 
+def test_systemd_service_limits_writable_paths() -> None:
+    service_text = SERVICE.read_text()
+
+    assert "WorkingDirectory=%S/r1-hermes" in service_text
+    assert "WorkingDirectory=%h" not in service_text
+    assert "StateDirectory=r1-hermes" in service_text
+    assert "StateDirectoryMode=0700" in service_text
+    assert "RuntimeDirectory=r1-hermes" in service_text
+    assert "RuntimeDirectoryMode=0700" in service_text
+    assert "ProtectSystem=strict" in service_text
+    assert "ProtectHome=tmpfs" in service_text
+    assert "BindReadOnlyPaths=%h/.local/bin %h/.local/lib" in service_text
+    assert "BindPaths=%S/r1-hermes %t/r1-hermes -%h/.hermes" in service_text
+    assert "RestrictNamespaces=true" in service_text
+    assert "RestrictRealtime=true" in service_text
+    assert "ProtectHostname=true" in service_text
+    assert "SystemCallFilter=@system-service" in service_text
+    assert "SystemCallFilter=~@privileged @resources" in service_text
+    assert "--state-dir %S/r1-hermes" in service_text
+    assert "--ready-file %t/r1-hermes/ready" in service_text
+
+
 def test_env_example_keeps_localhost_default_and_token_placeholder() -> None:
     env_text = ENV_EXAMPLE.read_text()
 
@@ -49,5 +71,15 @@ def test_systemd_docs_cover_operations_and_health_checks() -> None:
         "r1-hermes probe",
         "systemctl --user enable --now r1-hermes.service",
         "journalctl --user-unit r1-hermes.service",
+        "## Write-path assumptions",
+        "%S/r1-hermes",
+        "%t/r1-hermes/ready",
+        "%h/.hermes",
+        "ProtectHome=tmpfs",
+        "BindReadOnlyPaths",
+        "BindPaths",
+        "ReadWritePaths",
+        "## Permission-related startup failures",
+        "systemd-analyze --user verify",
     ):
         assert required in doc_text
