@@ -71,6 +71,13 @@ r1-hermes hermes \
   --timeout 180
 ```
 
+Toolsets that can affect the host, local files, browsers/desktops, smart-home systems, or vehicles
+fail closed for Rabbit R1 sessions. Requests such as `--toolsets terminal,file` or the same value in
+`R1_HERMES_TOOLSETS` are rejected unless the operator has explicitly reviewed the network boundary,
+pairing flow, physical access model, and command/data access risk, then opts in with
+`--allow-high-impact-toolsets` or `R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1`. Keep `safe`, or
+`safe,web` when web access is intentionally needed, for normal R1 use.
+
 Use a Tailscale IP, firewall allowlist, or reverse proxy with mTLS or IP allowlisting when the Rabbit R1 must reach the gateway from another device. Do not use wildcard binds or expose the raw gateway directly to the public Internet.
 
 `R1_HERMES_GLOBAL_CONCURRENCY` defaults to `2`, and `R1_HERMES_PER_DEVICE_CONCURRENCY` defaults
@@ -181,6 +188,8 @@ The demo handler echoes messages. Use `r1-hermes hermes` for a gateway that actu
   malformed handshake attempts are closed with a policy-violation code and never reach Hermes.
 - Each device/session key resumes a stable Hermes CLI session via `hermes chat --continue r1-hermes-...`.
 - The gateway enforces global and per-device in-flight caps before starting `hermes chat`.
+- High-impact Hermes toolsets such as `terminal`, `file`, smart-home, browser/desktop automation,
+  and vehicle controls require an explicit high-impact opt-in before Hermes is configured.
 - Hermes stderr is not returned to R1 to avoid leaking secrets.
 - Failures are returned as short, generic messages and details stay in local logs.
 

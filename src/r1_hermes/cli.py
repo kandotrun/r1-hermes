@@ -20,6 +20,7 @@ from .adapter import (
 from .hermes_runner import HermesCliRunner
 from .qr import build_pairing_payload, write_qr_png
 from .r1_client import R1ProbeClient
+from .toolsets import high_impact_toolset_error, high_impact_toolsets
 
 TOKEN_BYTES = 32
 TOKEN_ENV_NAME = "R1_HERMES_GATEWAY_TOKEN"  # noqa: S105 - env var name, not a secret
@@ -113,6 +114,12 @@ def main() -> None:
     add_server_args(hermes)
     hermes.add_argument("--hermes-command", default=os.environ.get("R1_HERMES_COMMAND", "hermes"))
     hermes.add_argument("--toolsets", default=os.environ.get("R1_HERMES_TOOLSETS", "safe"))
+    hermes.add_argument(
+        "--allow-high-impact-toolsets",
+        action="store_true",
+        default=_env_flag("R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS"),
+        help="Explicitly allow high-impact Hermes toolsets such as terminal or file",
+    )
     hermes.add_argument(
         "--timeout", type=float, default=float(os.environ.get("R1_HERMES_TIMEOUT", "180"))
     )
@@ -223,11 +230,15 @@ def main() -> None:
         if args.command == "serve":
             message_handler = _demo_handler
         else:
+            risky_toolsets = high_impact_toolsets(args.toolsets)
+            if risky_toolsets and not args.allow_high_impact_toolsets:
+                raise SystemExit(high_impact_toolset_error(risky_toolsets))
             message_handler = HermesCliRunner(
                 command=(args.hermes_command,),
                 timeout_seconds=args.timeout,
                 toolsets=args.toolsets or None,
                 continue_sessions=not args.no_continue,
+                allow_high_impact_toolsets=args.allow_high_impact_toolsets,
             )
         try:
             adapter = R1HermesAdapter(config, message_handler=message_handler)

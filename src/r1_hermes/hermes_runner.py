@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from .chat_errors import ChatRunFailedError, ChatRunTimeoutError
+from .toolsets import toolsets_to_cli_arg, validate_toolsets
 
 ProcessFactory = Callable[..., Awaitable[asyncio.subprocess.Process]]
 
@@ -33,7 +34,15 @@ class HermesCliRunner:
     toolsets: str | None = "safe"
     source: str = "r1-hermes"
     continue_sessions: bool = True
+    allow_high_impact_toolsets: bool = False
     process_factory: ProcessFactory | None = None
+
+    def __post_init__(self) -> None:
+        requested = validate_toolsets(
+            self.toolsets,
+            allow_high_impact_toolsets=self.allow_high_impact_toolsets,
+        )
+        object.__setattr__(self, "toolsets", toolsets_to_cli_arg(requested))
 
     async def __call__(self, text: str, *, device_id: str, session_key: str) -> str:
         argv = [*self.command, "chat", "--quiet", "--source", self.source]

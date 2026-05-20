@@ -193,13 +193,28 @@ unreviewed frames.
 
 ## Tool access
 
-Default toolset is `safe`. Expand deliberately:
+Default toolset is `safe`. Lower-risk expansion such as web access is allowed when it is intentional:
 
 ```bash
 r1-hermes hermes --toolsets safe,web
 ```
 
-Do not enable high-impact toolsets such as `terminal`, `file`, or smart-home controls until the network boundary, pairing flow, and physical access model are reviewed.
+High-impact toolsets fail closed for Rabbit R1 sessions. Requests such as
+`--toolsets terminal,file`, or `R1_HERMES_TOOLSETS=terminal,file`, are rejected unless the operator
+also passes `--allow-high-impact-toolsets` or sets `R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1`.
+
+Use that override only after reviewing the network boundary, QR and token handling, pairing flow,
+physical access model, and the command or data access exposed by the requested tools:
+
+```bash
+r1-hermes hermes \
+  --toolsets terminal,file \
+  --allow-high-impact-toolsets
+```
+
+The high-impact gate covers toolsets such as `terminal`, `shell`, `file`/`filesystem`, browser or
+desktop automation, smart-home/home automation, and vehicle/automotive controls. Do not enable them
+to compensate for public exposure or unclear device ownership.
 
 ## Current bridge limits
 
@@ -214,7 +229,8 @@ What works now:
 - Rabbit/OpenClaw-style pairing with a bearer gateway token and per-device token.
 - Authenticated text `chat.send` requests after `connect`.
 - Stable Hermes CLI continuation sessions per R1 `device.id` and `sessionKey`.
-- Local `safe` toolset by default, with explicit `--toolsets` expansion.
+- Local `safe` toolset by default, with explicit `--toolsets` expansion and a separate
+  high-impact override for host/file/automation control surfaces.
 - Global and per-device in-flight caps before Hermes subprocess execution.
 - Generic started/final/error chat events back to the active WebSocket.
 
@@ -267,7 +283,8 @@ converts `chat.send` into a dependency-free `R1GatewayMessageEvent` with these s
 - `session_id`: `r1:<device_id>:<session_key>`
 - `source`: `rabbit_r1:<device_id>:<session_key>`
 - `text`: the authenticated message text, excluded from `repr()`
-- `metadata`: sanitized `device_id`, `session_key`, and configured platform toolsets
+- `metadata`: sanitized `device_id`, `session_key`, and configured platform toolsets after
+  high-impact entries are removed unless explicitly allowlisted
 
 The prototype `send_text()` method sends a final chat event only when an authenticated WebSocket has
 activated the exact `device_id`/`session_key` by sending a `chat.send` in the current process. It
@@ -280,7 +297,8 @@ actual `MessageEvent` class, call the standard Gateway `_message_handler`, imple
 the active WebSocket map, and load R1 platform toolsets from Gateway config rather than CLI flags.
 The allowed user policy should default to the authenticated `device.id`, with an explicit allowlist
 for known device IDs when the deployment needs one. Do not accept any `chat.send` before `connect`,
-and do not broaden the default bind address or log bearer material during migration.
+do not broaden the default bind address or log bearer material during migration, and keep
+high-impact platform toolsets behind the same explicit allowlist.
 
 ## Migration notes
 

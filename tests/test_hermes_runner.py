@@ -75,6 +75,46 @@ async def test_runner_can_disable_session_continuation_and_set_toolsets():
     )
 
 
+def test_runner_rejects_high_impact_toolsets_by_default():
+    with pytest.raises(ValueError) as excinfo:
+        HermesCliRunner(toolsets="terminal,file")
+
+    error = str(excinfo.value)
+    assert "high-impact Hermes toolsets" in error
+    assert "terminal" in error
+    assert "file" in error
+    assert "--allow-high-impact-toolsets" in error
+
+
+@pytest.mark.asyncio
+async def test_runner_allows_high_impact_toolsets_with_explicit_override():
+    calls = []
+
+    async def fake_factory(*argv, **kwargs):
+        calls.append(argv)
+        return FakeProcess(b"ok")
+
+    runner = HermesCliRunner(
+        toolsets="terminal,file",
+        allow_high_impact_toolsets=True,
+        continue_sessions=False,
+        process_factory=fake_factory,
+    )
+
+    assert await runner("question", device_id="r1", session_key="s") == "ok"
+    assert calls[0] == (
+        "hermes",
+        "chat",
+        "--quiet",
+        "--source",
+        "r1-hermes",
+        "--toolsets",
+        "terminal,file",
+        "--query",
+        "question",
+    )
+
+
 @pytest.mark.asyncio
 async def test_runner_returns_short_error_without_leaking_stderr_on_failure():
     async def fake_factory(*_argv, **_kwargs):

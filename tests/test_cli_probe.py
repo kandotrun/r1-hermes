@@ -645,6 +645,181 @@ def test_hermes_command_reads_concurrency_from_env(monkeypatch, tmp_path):
     assert isinstance(captured["message_handler"], cli.HermesCliRunner)
 
 
+def test_hermes_command_allows_safe_and_web_toolsets(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeAdapter:
+        def __init__(self, config, *, message_handler):
+            captured["config"] = config
+            captured["message_handler"] = message_handler
+
+    async def fake_run_forever(adapter, *, ready_file=None):
+        captured["adapter"] = adapter
+        captured["ready_file"] = ready_file
+
+    monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
+    monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "hermes",
+            "--state-dir",
+            str(tmp_path),
+            "--toolsets",
+            "safe,web",
+        ],
+    )
+
+    cli.main()
+
+    assert isinstance(captured["message_handler"], cli.HermesCliRunner)
+    assert captured["message_handler"].toolsets == "safe,web"
+    assert captured["message_handler"].allow_high_impact_toolsets is False
+
+
+def test_hermes_command_rejects_high_impact_toolsets_without_override(
+    monkeypatch,
+    tmp_path,
+):
+    created = []
+
+    class FakeAdapter:
+        def __init__(self, config, *, message_handler):
+            created.append({"config": config, "message_handler": message_handler})
+
+    async def fake_run_forever(adapter, *, ready_file=None):
+        created.append({"adapter": adapter, "ready_file": ready_file})
+
+    monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
+    monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "hermes",
+            "--state-dir",
+            str(tmp_path),
+            "--toolsets",
+            "terminal,file",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    error = str(exc_info.value)
+    assert "high-impact Hermes toolsets" in error
+    assert "terminal" in error
+    assert "file" in error
+    assert "--allow-high-impact-toolsets" in error
+    assert "gateway-secret" not in error
+    assert created == []
+
+
+def test_hermes_command_rejects_high_impact_toolsets_from_env_without_override(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_TOOLSETS", "terminal,file")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "hermes",
+            "--state-dir",
+            str(tmp_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    error = str(exc_info.value)
+    assert "high-impact Hermes toolsets" in error
+    assert "terminal" in error
+    assert "file" in error
+    assert "gateway-secret" not in error
+
+
+def test_hermes_command_allows_high_impact_toolsets_with_explicit_flag(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+
+    class FakeAdapter:
+        def __init__(self, config, *, message_handler):
+            captured["config"] = config
+            captured["message_handler"] = message_handler
+
+    async def fake_run_forever(adapter, *, ready_file=None):
+        captured["adapter"] = adapter
+        captured["ready_file"] = ready_file
+
+    monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
+    monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "hermes",
+            "--state-dir",
+            str(tmp_path),
+            "--toolsets",
+            "terminal,file",
+            "--allow-high-impact-toolsets",
+        ],
+    )
+
+    cli.main()
+
+    assert isinstance(captured["message_handler"], cli.HermesCliRunner)
+    assert captured["message_handler"].toolsets == "terminal,file"
+    assert captured["message_handler"].allow_high_impact_toolsets is True
+
+
+def test_hermes_command_allows_high_impact_toolsets_with_env_override(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+
+    class FakeAdapter:
+        def __init__(self, config, *, message_handler):
+            captured["config"] = config
+            captured["message_handler"] = message_handler
+
+    async def fake_run_forever(adapter, *, ready_file=None):
+        captured["adapter"] = adapter
+        captured["ready_file"] = ready_file
+
+    monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
+    monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_TOOLSETS", "terminal,file")
+    monkeypatch.setenv("R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS", "1")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "hermes",
+            "--state-dir",
+            str(tmp_path),
+        ],
+    )
+
+    cli.main()
+
+    assert isinstance(captured["message_handler"], cli.HermesCliRunner)
+    assert captured["message_handler"].toolsets == "terminal,file"
+    assert captured["message_handler"].allow_high_impact_toolsets is True
+
+
 def test_server_command_reports_invalid_concurrency_without_traceback(monkeypatch, tmp_path):
     monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
     monkeypatch.setattr(

@@ -79,6 +79,38 @@ def test_chat_send_becomes_gateway_message_event_without_secret_metadata():
     assert "deviceToken" not in repr(event)
 
 
+def test_native_gateway_platform_toolsets_drop_high_impact_metadata_by_default():
+    bridge = R1GatewayMessageBridge(
+        gateway_message_handler=FakeGatewayPipeline(),
+        platform_toolsets=("safe", "terminal", "file", "web"),
+    )
+
+    event = bridge.to_message_event(
+        "hello native gateway",
+        device_id="r1-native-unit",
+        session_key="main",
+    )
+
+    assert bridge.platform_toolsets == ("safe", "web")
+    assert event.metadata["platform_toolsets"] == ("safe", "web")
+
+
+def test_native_gateway_platform_toolsets_allow_high_impact_metadata_with_override():
+    bridge = R1GatewayMessageBridge(
+        gateway_message_handler=FakeGatewayPipeline(),
+        platform_toolsets=("safe", "terminal", "file"),
+        allow_high_impact_toolsets=True,
+    )
+
+    event = bridge.to_message_event(
+        "hello native gateway",
+        device_id="r1-native-unit",
+        session_key="main",
+    )
+
+    assert event.metadata["platform_toolsets"] == ("safe", "terminal", "file")
+
+
 @pytest.mark.asyncio
 async def test_unexpected_gateway_reply_shape_is_not_stringified_with_secrets():
     class UnexpectedGatewayReply:

@@ -26,6 +26,8 @@ For supported Python versions and disclosure routing, see [`../README.md`](../RE
 8. QR payloads contain secrets and must be shared/retained accordingly.
 9. HTTP health checks expose only minimal readiness by default and stay local-only unless remote
    health access is explicitly reviewed.
+10. High-impact Hermes toolsets fail closed for Rabbit R1 sessions unless the operator explicitly
+    approves them with the high-impact override after reviewing the deployment boundary.
 
 ## Recommended deployment
 
@@ -67,11 +69,31 @@ avoid raising the per-device cap unless the operator explicitly accepts that one
 consume multiple Hermes subprocess slots. When a cap is reached, the gateway returns a generic
 `BUSY` response and does not start Hermes.
 
+Hermes tool access defaults to `safe`. Lower-risk expansion such as `safe,web` is allowed when the
+operator intentionally wants web access. High-impact toolsets are treated as host or environment
+control surfaces and fail closed when requested from `--toolsets` or `R1_HERMES_TOOLSETS`; this
+includes `terminal`, `shell`, `file`/`filesystem`, browser or desktop automation, smart-home/home
+automation, and vehicle/automotive controls. Approve them only after reviewing the network
+boundary, QR and device-token handling, physical access model, and the data or command execution
+available through that toolset:
+
+```bash
+r1-hermes hermes \
+  --toolsets terminal,file \
+  --allow-high-impact-toolsets
+```
+
+The same opt-in can be supplied as `R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1` for supervised service
+configuration. Do not use the override to work around public exposure, weak pairing controls, or an
+unclear physical-device ownership model.
+
 The native Gateway prototype in `src/r1_hermes/native_gateway.py` preserves the same preconditions:
 it converts only authenticated `chat.send` text into a gateway-style message event, excludes message
-text from event `repr()`, stores no bearer token in metadata, and makes `send_text()` a no-op when
-there is no active authenticated WebSocket for the target device/session. A future Hermes-core
-adapter or plugin must retain these properties before it can replace the standalone bridge.
+text from event `repr()`, stores no bearer token in metadata, sanitizes platform toolset metadata so
+high-impact toolsets cannot silently elevate without the explicit high-impact allowlist, and makes
+`send_text()` a no-op when there is no active authenticated WebSocket for the target device/session.
+A future Hermes-core adapter or plugin must retain these properties before it can replace the
+standalone bridge.
 
 ## Pairing flow
 
