@@ -28,6 +28,23 @@ In another terminal, verify Hermes itself is available:
 hermes chat --quiet --source r1-hermes-smoke --toolsets safe --query 'Reply with OK'
 ```
 
+You can also run the built-in diagnostics before pairing. `doctor` checks token presence, state
+directory and secret-file permissions, bind host/port safety, Hermes CLI availability, optional
+gateway probing, and an optional QR output path without printing bearer values, QR payload JSON,
+device tokens, raw auth headers, or the smoke-test prompt.
+
+```bash
+r1-hermes doctor \
+  --state-dir ~/.r1-hermes \
+  --host 127.0.0.1 \
+  --port 18789 \
+  --qr-output ./r1-hermes-secret.png
+```
+
+Exit code policy: `FAIL` checks return non-zero; `WARN` checks return zero but should be reviewed.
+Expected first-run warnings include a missing state directory that the gateway will create as
+`0700`, a skipped gateway probe when `--url` is omitted, and a localhost reachability reminder.
+
 ## Network pairing
 
 Pick the narrowest reachable address. Tailscale is preferred over broad LAN exposure.
@@ -238,6 +255,20 @@ Before scanning with the real device, probe the exact WebSocket flow from this m
 ```bash
 r1-hermes probe --url ws://100.x.y.z:18789/ --message 'Reply with OK from Hermes'
 ```
+
+For an agent- or operator-friendly pre-scan report, run doctor against the same advertised URL:
+
+```bash
+r1-hermes doctor \
+  --state-dir ~/.r1-hermes \
+  --host 100.x.y.z \
+  --port 18789 \
+  --url ws://100.x.y.z:18789/ \
+  --qr-output ./r1-hermes-secret.png
+```
+
+Do not generate or scan the QR while doctor reports missing token, unsafe state permissions,
+wildcard bind without an explicit reviewed opt-in, missing Hermes CLI, or failed probe checks.
 
 The HTTP `/healthz` endpoint is for readiness only. By default it is local-only and returns no
 paired-device state:
