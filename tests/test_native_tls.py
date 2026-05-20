@@ -1,16 +1,12 @@
 import asyncio
-import ipaddress
 import os
+import shutil
+import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 from aiohttp import ClientSession
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
 
 
 @pytest.mark.asyncio
@@ -87,37 +83,34 @@ async def test_cli_server_requires_tls_cert_and_key_together(tmp_path, unused_tc
 
 
 def write_self_signed_cert(tmp_path: Path) -> tuple[Path, Path]:
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    subject = issuer = x509.Name(
-        [x509.NameAttribute(NameOID.COMMON_NAME, "localhost")]
-    )
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(issuer)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.now(timezone.utc) - timedelta(minutes=1))
-        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=1))
-        .add_extension(
-            x509.SubjectAlternativeName(
-                [x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]
-            ),
-            critical=False,
-        )
-        .sign(key, hashes.SHA256())
-    )
     key_file = tmp_path / "server.key"
     cert_file = tmp_path / "server.crt"
-    key_file.write_bytes(
-        key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.TraditionalOpenSSL,
-            serialization.NoEncryption(),
-        )
+    openssl = shutil.which("openssl")
+    assert openssl is not None
+    subprocess.run(  # noqa: S603 - test-only invocation with fixed arguments and temporary paths
+        [
+            openssl,
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            str(key_file),
+            "-out",
+            str(cert_file),
+            "-days",
+            "1",
+            "-subj",
+            "/CN=localhost",
+            "-addext",
+            "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     key_file.chmod(0o600)
-    cert_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
     return cert_file, key_file
 
 
