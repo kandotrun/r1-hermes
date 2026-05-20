@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ipaddress
 import json
 import logging
 import os
 import secrets
+import socket
+import stat
 import sys
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from .adapter import (
     DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS,
@@ -15,18 +21,35 @@ from .adapter import (
     DEFAULT_GLOBAL_CONCURRENCY,
     DEFAULT_IDEMPOTENCY_CACHE_MAX_ENTRIES,
     DEFAULT_IDEMPOTENCY_CACHE_TTL_SECONDS,
+    PUBLIC_BIND_ERROR,
+    STATE_DIGEST_KEY_FILE,
     STATE_FILE,
     DeviceState,
     R1HermesAdapter,
     R1HermesConfig,
+    _is_wildcard_public_bind,
 )
-from .hermes_runner import HermesCliRunner
+from .hermes_runner import HERMES_SMOKE_QUERY, HermesCliRunner, run_hermes_smoke
 from .qr import build_pairing_payload, write_qr_png
 from .r1_client import R1ProbeClient
 from .toolsets import high_impact_toolset_error, high_impact_toolsets
 
 TOKEN_BYTES = 32
 TOKEN_ENV_NAME = "R1_HERMES_GATEWAY_TOKEN"  # noqa: S105 - env var name, not a secret
+_create_subprocess_exec = asyncio.create_subprocess_exec
+
+
+class DoctorSeverity(str, Enum):
+    PASS = "PASS"  # noqa: S105 - status label, not a credential
+    WARN = "WARN"
+    FAIL = "FAIL"
+
+
+@dataclass(frozen=True)
+class DoctorCheck:
+    severity: DoctorSeverity
+    name: str
+    detail: str
 
 
 def _env_flag(name: str) -> bool:
@@ -134,6 +157,50 @@ def add_device_expiry_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_doctor_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--state-dir", default=str(Path.home() / ".r1-hermes"))
+    parser.add_argument("--host", default=os.environ.get("R1_HERMES_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("R1_HERMES_PORT", "18789")))
+    parser.add_argument(
+        "--allow-public-bind",
+        action="store_true",
+        default=_env_flag("R1_HERMES_ALLOW_PUBLIC_BIND"),
+        help="Acknowledge an intentionally reviewed wildcard bind during diagnostics",
+    )
+    parser.add_argument("--hermes-command", default=os.environ.get("R1_HERMES_COMMAND", "hermes"))
+    parser.add_argument(
+        "--hermes-timeout",
+        type=float,
+        default=float(os.environ.get("R1_HERMES_DOCTOR_HERMES_TIMEOUT", "30")),
+        help="Seconds to wait for the safe Hermes smoke command",
+    )
+    parser.add_argument(
+        "--skip-hermes-smoke",
+        action="store_true",
+        help="Skip the Hermes CLI smoke command and report a warning instead",
+    )
+    parser.add_argument("--url", help="Optional WebSocket URL to probe without printing secrets")
+    parser.add_argument("--token", default=os.environ.get("R1_HERMES_GATEWAY_TOKEN", ""))
+    parser.add_argument("--device-id", default="r1-doctor")
+    parser.add_argument("--session-key", default="doctor")
+    parser.add_argument(
+        "--probe-timeout",
+        type=float,
+        default=30.0,
+        help="Seconds to wait for the optional WebSocket probe",
+    )
+    parser.add_argument(
+        "--connect-method",
+        choices=["connect", "gateway.connect"],
+        default="connect",
+        help="Handshake variant to exercise when --url is provided",
+    )
+    parser.add_argument(
+        "--qr-output",
+        help="Optional planned QR PNG output path to check without generating a QR",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="r1-hermes")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -216,6 +283,9 @@ def main() -> None:
     cleanup = sub.add_parser("cleanup", help="Prune expired Rabbit R1 device records")
     cleanup.add_argument("--state-dir", default=str(Path.home() / ".r1-hermes"))
     add_device_expiry_args(cleanup)
+
+    doctor = sub.add_parser("doctor", help="Run secret-safe setup and pairing diagnostics")
+    add_doctor_args(doctor)
 
     probe = sub.add_parser("probe", help="Send a Rabbit R1-style probe message to a gateway")
     probe.add_argument("--url", required=True, help="WebSocket URL, e.g. ws://100.x.y.z:18789/")
@@ -364,6 +434,10 @@ def main() -> None:
         )
         removed = state.prune_expired()
         print(f"Pruned expired devices: {removed}")
+    elif args.command == "doctor":
+        exit_code = asyncio.run(_run_doctor(args))
+        if exit_code:
+            raise SystemExit(exit_code)
 
 
 async def _run_forever(adapter: R1HermesAdapter, *, ready_file: Path | None = None) -> None:
@@ -377,6 +451,472 @@ async def _run_forever(adapter: R1HermesAdapter, *, ready_file: Path | None = No
             await asyncio.sleep(3600)
     finally:
         await adapter.stop()
+
+
+async def _run_doctor(args: argparse.Namespace) -> int:
+    token = str(args.token or "")
+    checks: list[DoctorCheck] = []
+    checks.extend(_doctor_token_checks(token))
+    checks.extend(_doctor_state_checks(Path(args.state_dir)))
+    checks.extend(
+        _doctor_host_port_checks(
+            host=str(args.host),
+            port=int(args.port),
+            allow_public_bind=bool(args.allow_public_bind),
+        )
+    )
+    checks.extend(_doctor_qr_output_checks(Path(args.qr_output)) if args.qr_output else [])
+
+    if args.skip_hermes_smoke:
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.WARN,
+                "Hermes CLI smoke",
+                "skipped by --skip-hermes-smoke; run it before pairing a real Rabbit R1",
+            )
+        )
+    else:
+        checks.extend(
+            await _doctor_hermes_checks(
+                command=str(args.hermes_command),
+                timeout_seconds=float(args.hermes_timeout),
+            )
+        )
+
+    if args.url:
+        checks.extend(
+            await _doctor_probe_checks(
+                url=str(args.url),
+                token=token,
+                device_id=str(args.device_id),
+                session_key=str(args.session_key),
+                timeout_seconds=float(args.probe_timeout),
+                connect_method=str(args.connect_method),
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.WARN,
+                "Gateway probe",
+                "skipped; pass --url after the gateway is running",
+            )
+        )
+
+    _print_doctor_report(checks, secrets_to_redact=[token])
+    return 1 if any(check.severity is DoctorSeverity.FAIL for check in checks) else 0
+
+
+def _doctor_token_checks(token: str) -> list[DoctorCheck]:
+    if not token:
+        return [
+            DoctorCheck(
+                DoctorSeverity.FAIL,
+                TOKEN_ENV_NAME,
+                "missing; create a fresh bearer token before starting the gateway or probing",
+            )
+        ]
+    return [
+        DoctorCheck(
+            DoctorSeverity.PASS,
+            TOKEN_ENV_NAME,
+            "present; value redacted and not printed",
+        )
+    ]
+
+
+def _doctor_state_checks(state_dir: Path) -> list[DoctorCheck]:
+    checks: list[DoctorCheck] = []
+    if state_dir.is_symlink():
+        return [
+            DoctorCheck(
+                DoctorSeverity.FAIL,
+                "state directory",
+                f"must not be a symlink: {state_dir}",
+            )
+        ]
+    if not state_dir.exists():
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.WARN,
+                "state directory",
+                f"does not exist yet; gateway will create it as 0700 at {state_dir}",
+            )
+        )
+        return checks
+
+    if not state_dir.is_dir():
+        return [
+            DoctorCheck(
+                DoctorSeverity.FAIL,
+                "state directory",
+                f"is not a directory: {state_dir}",
+            )
+        ]
+
+    dir_mode = _permission_bits(state_dir)
+    if dir_mode & 0o077:
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.FAIL,
+                "state directory",
+                f"mode {_format_mode(dir_mode)} is unsafe; expected 0700 for {state_dir}",
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.PASS,
+                "state directory",
+                f"mode {_format_mode(dir_mode)} keeps paired-device state owner-only",
+            )
+        )
+
+    checks.extend(_doctor_secret_file_check(state_dir / STATE_FILE, "devices.json"))
+    checks.extend(_doctor_secret_file_check(state_dir / STATE_DIGEST_KEY_FILE, "device HMAC key"))
+    return checks
+
+
+def _doctor_secret_file_check(path: Path, name: str) -> list[DoctorCheck]:
+    if path.is_symlink():
+        return [
+            DoctorCheck(
+                DoctorSeverity.FAIL,
+                name,
+                f"must not be a symlink: {path}",
+            )
+        ]
+    if not path.exists():
+        return [
+            DoctorCheck(
+                DoctorSeverity.PASS,
+                name,
+                "not present yet; no stored device-token material to inspect",
+            )
+        ]
+    if not path.is_file():
+        return [DoctorCheck(DoctorSeverity.FAIL, name, f"is not a regular file: {path}")]
+
+    mode = _permission_bits(path)
+    if mode & 0o077:
+        return [
+            DoctorCheck(
+                DoctorSeverity.FAIL,
+                name,
+                f"mode {_format_mode(mode)} is unsafe; expected 0600 for {path}",
+            )
+        ]
+    return [
+        DoctorCheck(
+            DoctorSeverity.PASS,
+            name,
+            f"mode {_format_mode(mode)} keeps local token material owner-only",
+        )
+    ]
+
+
+def _doctor_host_port_checks(
+    *, host: str, port: int, allow_public_bind: bool
+) -> list[DoctorCheck]:
+    checks: list[DoctorCheck] = []
+    if not (1 <= port <= 65535):
+        checks.append(DoctorCheck(DoctorSeverity.FAIL, "bind port", f"{port} is outside 1-65535"))
+    else:
+        checks.append(DoctorCheck(DoctorSeverity.PASS, "bind port", f"{port} is valid"))
+
+    if not host.strip():
+        checks.append(DoctorCheck(DoctorSeverity.FAIL, "bind host", "empty host is unsafe"))
+        return checks
+
+    if _is_wildcard_public_bind(host):
+        if allow_public_bind:
+            checks.append(
+                DoctorCheck(
+                    DoctorSeverity.WARN,
+                    "bind host",
+                    "wildcard bind acknowledged; verify firewall, client path, and QR address",
+                )
+            )
+        else:
+            checks.append(
+                DoctorCheck(
+                    DoctorSeverity.FAIL,
+                    "bind host",
+                    PUBLIC_BIND_ERROR.format(host=host),
+                )
+            )
+        return checks
+
+    host_class = _classify_host(host)
+    if host_class == "loopback":
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.PASS,
+                "bind host",
+                "loopback bind is safe for local smoke tests",
+            )
+        )
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.WARN,
+                "reachability hint",
+                "Rabbit R1 needs a concrete Tailscale/LAN/proxy address before real pairing",
+            )
+        )
+    elif host_class == "tailscale":
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.PASS,
+                "bind host",
+                "specific Tailscale address selected; verify Rabbit R1 can reach it",
+            )
+        )
+    elif host_class == "private":
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.PASS,
+                "bind host",
+                "specific private address selected; verify Rabbit R1 can reach it",
+            )
+        )
+    elif host_class == "public":
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.WARN,
+                "bind host",
+                "address appears publicly routable; prefer Tailscale, mTLS, or IP allowlisting",
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.WARN,
+                "bind host",
+                "hostname could not be classified locally; verify it resolves to a narrow address",
+            )
+        )
+    return checks
+
+
+async def _doctor_hermes_checks(*, command: str, timeout_seconds: float) -> list[DoctorCheck]:
+    result = await run_hermes_smoke(
+        command=(command,),
+        timeout_seconds=timeout_seconds,
+        process_factory=_create_subprocess_exec,
+    )
+    if not result.ok:
+        detail = result.error or "Hermes smoke command failed"
+        if result.returncode is not None:
+            detail = f"{detail}; stderr bytes={result.stderr_bytes}"
+        return [DoctorCheck(DoctorSeverity.FAIL, "Hermes CLI smoke", detail)]
+    if result.stdout.strip() != "OK":
+        return [
+            DoctorCheck(
+                DoctorSeverity.WARN,
+                "Hermes CLI smoke",
+                "command completed but did not return exact OK; response text omitted",
+            )
+        ]
+    return [DoctorCheck(DoctorSeverity.PASS, "Hermes CLI smoke", "safe toolset returned OK")]
+
+
+async def _doctor_probe_checks(
+    *,
+    url: str,
+    token: str,
+    device_id: str,
+    session_key: str,
+    timeout_seconds: float,
+    connect_method: str,
+) -> list[DoctorCheck]:
+    if not token:
+        return [
+            DoctorCheck(
+                DoctorSeverity.FAIL,
+                "Gateway probe",
+                "cannot run without a gateway token; value would remain redacted",
+            )
+        ]
+    safe_url = _redact_url(url)
+    try:
+        result = await R1ProbeClient(
+            url=url,
+            token=token,
+            device_id=device_id,
+            timeout_seconds=timeout_seconds,
+            connect_method=connect_method,
+            dump_frames=False,
+            frame_sink=None,
+        ).send_message(HERMES_SMOKE_QUERY, session_key=session_key)
+    except Exception as exc:
+        return [
+            DoctorCheck(
+                DoctorSeverity.FAIL,
+                "Gateway probe",
+                f"failed for {safe_url}: {type(exc).__name__}; details omitted",
+            )
+        ]
+    if not getattr(result, "response_text", ""):
+        return [
+            DoctorCheck(
+                DoctorSeverity.WARN,
+                "Gateway probe",
+                f"completed for {safe_url} but returned an empty response",
+            )
+        ]
+    return [
+        DoctorCheck(
+            DoctorSeverity.PASS,
+            "Gateway probe",
+            f"completed for {safe_url}; response and device token omitted",
+        )
+    ]
+
+
+def _doctor_qr_output_checks(output_path: Path) -> list[DoctorCheck]:
+    checks: list[DoctorCheck] = []
+    parent = output_path.parent
+    if output_path.is_symlink():
+        return [
+            DoctorCheck(
+                DoctorSeverity.FAIL,
+                "QR output path",
+                f"must not be a symlink: {output_path}",
+            )
+        ]
+    if output_path.exists():
+        if output_path.is_dir():
+            return [
+                DoctorCheck(
+                    DoctorSeverity.FAIL,
+                    "QR output path",
+                    f"is a directory; choose a new PNG path: {output_path}",
+                )
+            ]
+        mode = _permission_bits(output_path)
+        if mode & 0o077:
+            return [
+                DoctorCheck(
+                    DoctorSeverity.FAIL,
+                    "QR output path",
+                    f"existing file mode {_format_mode(mode)} is unsafe; expected 0600",
+                )
+            ]
+        return [
+            DoctorCheck(
+                DoctorSeverity.WARN,
+                "QR output path",
+                f"already exists at {output_path}; qr refuses overwrite unless --overwrite is set",
+            )
+        ]
+
+    existing_parent = parent
+    while not existing_parent.exists() and existing_parent != existing_parent.parent:
+        existing_parent = existing_parent.parent
+    if not existing_parent.is_dir():
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.FAIL,
+                "QR output path",
+                f"parent is not a directory: {existing_parent}",
+            )
+        )
+        return checks
+
+    parent_mode = _permission_bits(existing_parent)
+    if parent_mode & 0o022:
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.WARN,
+                "QR output path",
+                "parent "
+                f"{_format_mode(parent_mode)} is writable beyond owner; "
+                "QR file will still be 0600",
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.PASS,
+                "QR output path",
+                f"can create owner-only QR PNG at {output_path}",
+            )
+        )
+    return checks
+
+
+def _print_doctor_report(checks: list[DoctorCheck], *, secrets_to_redact: list[str]) -> None:
+    print("r1-hermes doctor (secret-safe diagnostics)")
+    for check in checks:
+        detail = _redact_text(check.detail, secrets_to_redact)
+        print(f"[{check.severity.value}] {check.name}: {detail}")
+    passes = sum(1 for check in checks if check.severity is DoctorSeverity.PASS)
+    warnings = sum(1 for check in checks if check.severity is DoctorSeverity.WARN)
+    failures = sum(1 for check in checks if check.severity is DoctorSeverity.FAIL)
+    exit_code = 1 if failures else 0
+    print(
+        f"Summary: {passes} pass, {warnings} warn, {failures} fail. "
+        f"Exit code {exit_code}: non-zero only when FAIL checks are present."
+    )
+
+
+def _permission_bits(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+def _format_mode(mode: int) -> str:
+    return f"0{mode:03o}"
+
+
+def _classify_host(host: str) -> str:
+    value = host.strip().strip("[]")
+    if value.lower() == "localhost":
+        return "loopback"
+    try:
+        addresses = [ipaddress.ip_address(value)]
+    except ValueError:
+        try:
+            resolved = socket.getaddrinfo(value, None, type=socket.SOCK_STREAM)
+        except socket.gaierror:
+            return "hostname"
+        addresses = [ipaddress.ip_address(item[4][0]) for item in resolved]
+    if all(address.is_loopback for address in addresses):
+        return "loopback"
+    if any(_is_tailscale_ipv4(address) for address in addresses):
+        return "tailscale"
+    if all(address.is_private or address.is_link_local for address in addresses):
+        return "private"
+    return "public"
+
+
+def _is_tailscale_ipv4(address: ipaddress._BaseAddress) -> bool:
+    tailscale_start = ipaddress.ip_address("100.64.0.0")
+    tailscale_end = ipaddress.ip_address("100.127.255.255")
+    return address.version == 4 and tailscale_start <= address <= tailscale_end
+
+
+def _redact_url(url: str) -> str:
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return "[redacted-url]"
+    host = parsed.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = host
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    query = "[redacted-query]" if parsed.query else ""
+    path = "/" if parsed.path in {"", "/"} else "/[redacted-path]"
+    return urlunsplit((parsed.scheme, netloc, path, query, ""))
+
+
+def _redact_text(text: str, secrets_to_redact: list[str]) -> str:
+    redacted = text
+    for secret in secrets_to_redact:
+        if secret:
+            redacted = redacted.replace(secret, "[REDACTED]")
+    return redacted.replace(HERMES_SMOKE_QUERY, "[REDACTED_PROMPT]")
 
 
 def _print_revoke_summary(

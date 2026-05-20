@@ -64,6 +64,7 @@ import r1_hermes
 print(r1_hermes.__file__)
 PY
 r1-hermes --help
+r1-hermes doctor --help
 python -m pytest -q
 ```
 
@@ -88,6 +89,24 @@ PY
 ```
 
 Do not echo this environment variable. If you accidentally expose it, rotate it by generating a new one and restart the gateway.
+
+Before starting the gateway, run the secret-safe diagnostics. This command prints pass/warn/fail
+status only; it must not print the gateway token, device tokens, QR payload JSON, raw auth headers,
+or the smoke-test prompt. A non-zero exit means at least one `FAIL` check must be fixed. Warnings
+exit zero but should still be reviewed before a real Rabbit R1 scan.
+
+```bash
+r1-hermes doctor \
+  --state-dir ~/.r1-hermes \
+  --host 127.0.0.1 \
+  --port 18789 \
+  --qr-output ./r1-hermes-secret.png
+```
+
+Expected status for a first local run may include warnings for a not-yet-created state directory,
+skipped gateway probe, or localhost reachability. Missing `R1_HERMES_GATEWAY_TOKEN`, unsafe
+state-file permissions, wildcard binds without `--allow-public-bind`, and a missing Hermes CLI are
+hard failures.
 
 ## 5. Local smoke test
 
@@ -205,6 +224,18 @@ Probe the exact advertised WebSocket URL:
 r1-hermes probe \
   --url ws://<REACHABLE_HOST>:18789/ \
   --message 'Reply with exactly OK'
+```
+
+Then run doctor against the same URL. It performs the same secret-safe probe flow and omits the
+assistant response and issued device token from its report:
+
+```bash
+r1-hermes doctor \
+  --state-dir ~/.r1-hermes \
+  --host <REACHABLE_HOST> \
+  --port 18789 \
+  --url ws://<REACHABLE_HOST>:18789/ \
+  --qr-output ./r1-hermes-secret.png
 ```
 
 If the probe cannot connect, do not generate a QR yet. Fix reachability first.

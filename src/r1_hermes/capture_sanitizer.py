@@ -11,6 +11,7 @@ from typing import Any
 
 from .payloads import (
     PayloadParseError,
+    parse_chat_history_params,
     parse_chat_send_params,
     parse_connect_params,
     request_params,
@@ -34,7 +35,7 @@ SAFE_NETWORK_VALUES = {SAFE_TAILSCALE_IP, SAFE_TEST_NET_IP, SAFE_WS_URL}
 REDACTED = "[REDACTED]"
 
 CONNECT_METHODS = {"connect", "gateway.connect"}
-REQUEST_METHODS = CONNECT_METHODS | {"chat.send"}
+REQUEST_METHODS = CONNECT_METHODS | {"chat.send", "chat.history"}
 EVENT_NAMES = {"connect.challenge", "connect.ok", "node.pair.approved", "chat"}
 GATEWAY_TOKEN_KEYS = {"token", "authToken", "gatewayToken", "bearerToken"}
 DEVICE_TOKEN_KEYS = {"deviceToken"}
@@ -254,6 +255,8 @@ def _validate_request_frame(frame: Mapping[str, Any]) -> None:
         _validate_connect_request(params)
     elif method == "chat.send":
         _validate_chat_request(params)
+    elif method == "chat.history":
+        _validate_chat_history_request(params)
 
 
 def _validate_connect_request(params: Mapping[str, Any]) -> None:
@@ -276,6 +279,14 @@ def _validate_chat_request(params: Mapping[str, Any]) -> None:
     _require_public_text(chat.session_key, label="session key")
     if chat.idempotency_key is not None:
         _require_public_text(chat.idempotency_key, label="run id")
+
+
+def _validate_chat_history_request(params: Mapping[str, Any]) -> None:
+    try:
+        history = parse_chat_history_params(params)
+    except PayloadParseError as exc:
+        raise CaptureSchemaError(exc.message) from exc
+    _require_public_text(history.session_key, label="session key")
 
 
 def _validate_response_frame(frame: Mapping[str, Any]) -> None:
