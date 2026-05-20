@@ -28,6 +28,7 @@ For supported Python versions and disclosure routing, see [`../README.md`](../RE
    health access is explicitly reviewed.
 10. High-impact Hermes toolsets fail closed for Rabbit R1 sessions unless the operator explicitly
     approves them with the high-impact override after reviewing the deployment boundary.
+11. Audit logs may contain operational metadata, but never bearer tokens, QR payloads, raw authorization headers, full prompts, Hermes stderr, or raw device IDs.
 
 ## Recommended deployment
 
@@ -94,6 +95,39 @@ high-impact toolsets cannot silently elevate without the explicit high-impact al
 `send_text()` a no-op when there is no active authenticated WebSocket for the target device/session.
 A future Hermes-core adapter or plugin must retain these properties before it can replace the
 standalone bridge.
+
+## Audit logging boundary
+
+Structured audit logs are local observability data, not a transcript. Events are emitted as
+single-line JSON through the `r1_hermes.audit` logger so operators can distinguish parser errors,
+authentication failures, rate limits, busy rejections, Hermes subprocess failures, and run lifecycle
+states. The gateway logs stable `sha256:<16 hex>` hashes for correlation instead of raw `device.id`,
+`sessionKey`, peer IP, or run ID values.
+
+Do not add gateway tokens, issued device tokens, QR payload JSON, raw authorization headers, full
+message bodies, Hermes stderr, API keys, cookies, or real Rabbit R1 captures to log fields. Prefer
+counts, lengths, configured limits, generic reason codes, safe error codes, and hashed identifiers.
+`INFO` is for successful challenge/auth/run/revoke/cleanup lifecycle events; `WARNING` is for
+operator-actionable rejects such as malformed payloads, auth failures, rate limits, busy responses,
+and Hermes subprocess exits; `ERROR` is for authenticated chat runs that return a generic failure to
+the device.
+
+Example redacted events:
+
+```json
+{"event":"auth.failure","level":"warning","method":"connect","reason":"token_mismatch","device_id_hash":"sha256:0123456789abcdef","ts_ms":1710000000000}
+{"event":"busy_rejected","level":"warning","reason":"global_concurrency","device_id_hash":"sha256:0123456789abcdef","global_inflight":2,"global_limit":2,"ts_ms":1710000000000}
+```
+
+When using systemd, read audit lines from journald and keep retention bounded:
+
+```bash
+journalctl --user-unit r1-hermes.service --since today -o cat | grep '"event"'
+journalctl --user --vacuum-time=14d
+```
+
+If logs contain unexpected bearer material, follow the incident response process below before
+reconnecting or re-pairing devices.
 
 ## Pairing flow
 

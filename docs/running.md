@@ -144,6 +144,44 @@ r1-hermes probe \
   --message 'Reply with OK from Hermes'
 ```
 
+## Audit logs
+
+The gateway emits one-line JSON audit events through the `r1_hermes.audit` logger. These logs are
+intended for local operator debugging and include stable hashes, counts, error codes, limits, and
+durations. They do not include gateway tokens, device tokens, QR payloads, raw authorization
+headers, raw device IDs, full run IDs, Hermes stderr, or full user prompts by default.
+The CLI configures standard Python logging for `serve` and `hermes`; set `R1_HERMES_LOG_LEVEL` if
+you need to raise or lower verbosity.
+
+Useful event names include:
+
+- `connect.challenge_issued` at `INFO` when a WebSocket challenge is sent.
+- `auth.success` at `INFO` when `connect` or `gateway.connect` authenticates.
+- `auth.failure` and `auth.parser_error` at `WARNING` for bad tokens versus malformed handshake
+  payloads.
+- `rate_limited` and `busy_rejected` at `WARNING` before Hermes is invoked.
+- `chat.run_started`, `chat.run_final`, and `chat.run_error` for authenticated run lifecycle.
+- `hermes.subprocess_failed` and `hermes.subprocess_timeout` for Hermes CLI failures.
+- `device.revoke`, `device.revoke_all`, and `device.cleanup` for local device-state operations.
+
+With the systemd user service, inspect recent audit events with journald:
+
+```bash
+journalctl --user-unit r1-hermes.service --since today -o cat | grep '"event"'
+journalctl --user-unit r1-hermes.service -f -o cat | grep '"event"'
+```
+
+Representative redacted events look like:
+
+```json
+{"auth_type":"gateway_token","device_id_hash":"sha256:0123456789abcdef","device_token_rotated":false,"event":"auth.success","level":"info","method":"connect","ts_ms":1710000000000}
+{"device_id_hash":"sha256:0123456789abcdef","error_code":"CHAT_RUN_FAILED","event":"chat.run_error","level":"error","run_id_hash":"sha256:abcdef0123456789","safe_message":"chat run failed","session_key_hash":"sha256:1111222233334444","ts_ms":1710000000000}
+```
+
+If an audit line contains a bearer secret or raw authorization material, treat it as an incident:
+stop or firewall the gateway, rotate `R1_HERMES_GATEWAY_TOKEN`, revoke affected devices, and review
+local log retention before pairing again.
+
 Scan the QR with Rabbit R1. Delete the PNG after pairing:
 
 ```bash

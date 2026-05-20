@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import secrets
 import sys
@@ -28,6 +29,12 @@ TOKEN_ENV_NAME = "R1_HERMES_GATEWAY_TOKEN"  # noqa: S105 - env var name, not a s
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _configure_logging() -> None:
+    level_name = os.environ.get("R1_HERMES_LOG_LEVEL", "INFO").strip().upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(level=level, format="%(message)s")
 
 
 async def _demo_handler(text: str, *, device_id: str, session_key: str) -> str:
@@ -208,6 +215,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.command in {"payload", "qr", "probe"} and not args.token:
         raise SystemExit("--token or R1_HERMES_GATEWAY_TOKEN is required")
+    if args.command in {"serve", "hermes", "revoke", "rotate", "cleanup"}:
+        _configure_logging()
     if args.command in {"serve", "hermes"}:
         token = os.environ.get("R1_HERMES_GATEWAY_TOKEN", "")
         if not token:
@@ -313,6 +322,8 @@ def main() -> None:
         if args.env_file:
             env_path = _update_env_file_token(Path(args.env_file), token)
             print(f"Rotated gateway token in: {env_path}")
+        elif args.print_token:
+            print("Rotated gateway token for stdout delivery.")
         if args.print_token:
             print(f"NEW {TOKEN_ENV_NAME} (SECRET): {token}")
         revoked = state.revoke_all()

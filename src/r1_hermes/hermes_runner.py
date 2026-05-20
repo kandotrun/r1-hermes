@@ -7,6 +7,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from .audit import audit_log, hash_identifier
 from .chat_errors import ChatRunFailedError, ChatRunTimeoutError
 from .toolsets import toolsets_to_cli_arg, validate_toolsets
 
@@ -69,13 +70,23 @@ class HermesCliRunner:
                 await process.wait()
             except Exception:  # pragma: no cover - best-effort cleanup
                 logger.exception("failed while waiting for timed-out Hermes process")
+            audit_log(
+                "warning",
+                "hermes.subprocess_timeout",
+                device_id_hash=hash_identifier(device_id),
+                session_key_hash=hash_identifier(session_key),
+                timeout_seconds=self.timeout_seconds,
+            )
             raise ChatRunTimeoutError from None
 
         if process.returncode != 0:
-            logger.warning(
-                "Hermes command failed with exit code %s; stderr length=%d",
-                process.returncode,
-                len(stderr or b""),
+            audit_log(
+                "warning",
+                "hermes.subprocess_failed",
+                device_id_hash=hash_identifier(device_id),
+                session_key_hash=hash_identifier(session_key),
+                returncode=process.returncode,
+                stderr_bytes=len(stderr or b""),
             )
             raise ChatRunFailedError
 
