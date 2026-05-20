@@ -58,7 +58,7 @@ r1-hermes hermes \
   --timeout 180
 ```
 
-Use a Tailscale IP, firewall allowlist, or reverse proxy when the Rabbit R1 must reach the gateway from another device. Avoid `0.0.0.0` unless the network boundary is explicit and reviewed.
+Use a Tailscale IP, firewall allowlist, or reverse proxy with mTLS or IP allowlisting when the Rabbit R1 must reach the gateway from another device. Do not use wildcard binds or expose the raw gateway directly to the public Internet.
 
 ## 3. Generate the Rabbit R1 QR payload
 
@@ -100,6 +100,16 @@ The demo handler echoes messages. Use `r1-hermes hermes` for a gateway that actu
 - Each device/session key resumes a stable Hermes CLI session via `hermes chat --continue r1-hermes-...`.
 - Hermes stderr is not returned to R1 to avoid leaking secrets.
 - Failures are returned as short, generic messages and details stay in local logs.
+
+## systemd user service
+
+For persistent operation, use the hardened user-service template in
+[`packaging/systemd/r1-hermes.service`](packaging/systemd/r1-hermes.service) with an env file at
+`~/.config/r1-hermes/r1-hermes.env`. The unit does not contain token literals and uses
+`--ready-file` for health checks.
+
+See [`docs/systemd-user-service.md`](docs/systemd-user-service.md) for install, enable, status,
+logs, rollback, localhost, and Tailscale examples.
 
 ## Security
 
