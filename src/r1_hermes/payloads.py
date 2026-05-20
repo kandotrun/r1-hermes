@@ -28,6 +28,11 @@ class ChatSendRequest:
     idempotency_key: str | None = None
 
 
+@dataclass(frozen=True)
+class ChatHistoryRequest:
+    session_key: str = "main"
+
+
 def request_params(frame: Mapping[str, Any]) -> dict[str, Any]:
     """Return normalized request params from either `params` or `payload` object shapes."""
     if not isinstance(frame, Mapping):
@@ -84,17 +89,11 @@ def parse_connect_params(params: Mapping[str, Any]) -> ConnectRequest:
 
 def parse_chat_send_params(params: Mapping[str, Any]) -> ChatSendRequest:
     data = _require_mapping(params, "params")
-    session = _optional_mapping(data.get("session"), "session")
-    conversation = _optional_mapping(data.get("conversation"), "conversation")
     message = _extract_message(data)
     if message is None or not message.strip():
         raise PayloadParseError("EMPTY_MESSAGE", "message is required")
 
-    session_key = _first_text(
-        (data, ("sessionKey", "session_key", "sessionId", "session_id", "conversationId")),
-        (session, ("key", "id", "sessionKey", "sessionId")),
-        (conversation, ("id", "key")),
-    )
+    session_key = _extract_session_key(data)
     idempotency_key = _first_text(
         (data, ("idempotencyKey", "idempotency_key", "requestId", "request_id", "runId")),
     )
@@ -103,6 +102,12 @@ def parse_chat_send_params(params: Mapping[str, Any]) -> ChatSendRequest:
         session_key=(session_key or "main")[:120],
         idempotency_key=idempotency_key,
     )
+
+
+def parse_chat_history_params(params: Mapping[str, Any]) -> ChatHistoryRequest:
+    data = _require_mapping(params, "params")
+    session_key = _extract_session_key(data)
+    return ChatHistoryRequest(session_key=session_key or "main")
 
 
 def _require_mapping(value: Any, label: str) -> Mapping[str, Any]:
@@ -155,6 +160,17 @@ def _extract_message(data: Mapping[str, Any]) -> str | None:
         return _content_to_text(message.get("content"))
 
     return _content_to_text(data.get("content"))
+
+
+def _extract_session_key(data: Mapping[str, Any]) -> str | None:
+    session = _optional_mapping(data.get("session"), "session")
+    conversation = _optional_mapping(data.get("conversation"), "conversation")
+    session_key = _first_text(
+        (data, ("sessionKey", "session_key", "sessionId", "session_id", "conversationId")),
+        (session, ("key", "id", "sessionKey", "sessionId")),
+        (conversation, ("id", "key")),
+    )
+    return session_key[:120] if session_key is not None else None
 
 
 def _content_to_text(content: Any) -> str | None:

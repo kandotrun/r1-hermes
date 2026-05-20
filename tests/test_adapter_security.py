@@ -288,6 +288,15 @@ def chat_frame(*, rid: str, message: str, session_key: str = "main") -> dict:
     }
 
 
+def history_frame(*, rid: str, session_key: str = "main") -> dict:
+    return {
+        "type": "req",
+        "id": rid,
+        "method": "chat.history",
+        "params": {"sessionKey": session_key},
+    }
+
+
 @pytest.mark.parametrize(
     "host",
     ["127.0.0.1", "::1", "localhost", "100.64.0.1", "192.168.1.20", "203.0.113.10"],
@@ -665,6 +674,163 @@ async def test_authenticated_chat_send_runs_agent_once(running_adapter):
     finally:
         await ws.close()
         await session.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_history_is_explicitly_unsupported_before_and_after_chat_send(tmp_path):
+    sink = FakeHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+
+    before_ws = FakeWebSocket()
+    await adapter._handle_chat_history(
+        before_ws,
+        "history-before",
+        history_frame(rid="history-before"),
+    )
+
+    await adapter._handle_chat_send(
+        FakeWebSocket(),
+        "chat-private",
+        chat_frame(
+            rid="chat-private",
+            message="private prompt DUMMY_SECRET_TOKEN_DO_NOT_USE",
+        ),
+        "r1-history-device",
+    )
+
+    after_ws = FakeWebSocket()
+    await adapter._handle_chat_history(
+        after_ws,
+        "history-after",
+        history_frame(rid="history-after"),
+    )
+
+    assert before_ws.frames == [
+        {
+            "type": "res",
+            "id": "history-before",
+            "ok": True,
+            "payload": {
+                "sessionKey": "main",
+                "messages": [],
+                "status": "unsupported",
+                "historySupported": False,
+                "storage": "none",
+            },
+        }
+    ]
+    assert after_ws.frames == [
+        {
+            "type": "res",
+            "id": "history-after",
+            "ok": True,
+            "payload": {
+                "sessionKey": "main",
+                "messages": [],
+                "status": "unsupported",
+                "historySupported": False,
+                "storage": "none",
+            },
+        }
+    ]
+    assert sink.messages == [
+        {
+            "text": "private prompt DUMMY_SECRET_TOKEN_DO_NOT_USE",
+            "device_id": "r1-history-device",
+            "session_key": "main",
+        }
+    ]
+    assert "private prompt" not in json.dumps(after_ws.frames)
+    assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in json.dumps(after_ws.frames)
+
+
+@pytest.mark.asyncio
+async def test_chat_history_is_deterministic_for_known_and_unknown_session_keys(tmp_path):
+    sink = FakeHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+
+    await adapter._handle_chat_send(
+        FakeWebSocket(),
+        "chat-known",
+        chat_frame(rid="chat-known", message="known session text", session_key="known-session"),
+        "r1-history-device",
+    )
+
+    known_ws = FakeWebSocket()
+    unknown_ws = FakeWebSocket()
+    await adapter._handle_chat_history(
+        known_ws,
+        "history-known",
+        history_frame(rid="history-known", session_key="known-session"),
+    )
+    await adapter._handle_chat_history(
+        unknown_ws,
+        "history-unknown",
+        history_frame(rid="history-unknown", session_key="unknown-session"),
+    )
+
+    assert known_ws.frames[0]["payload"] == {
+        "sessionKey": "known-session",
+        "messages": [],
+        "status": "unsupported",
+        "historySupported": False,
+        "storage": "none",
+    }
+    assert unknown_ws.frames[0]["payload"] == {
+        "sessionKey": "unknown-session",
+        "messages": [],
+        "status": "unsupported",
+        "historySupported": False,
+        "storage": "none",
+    }
+
+
+@pytest.mark.asyncio
+async def test_chat_history_accepts_sanitized_payload_aliases(tmp_path):
+    adapter = R1HermesAdapter(
+        R1HermesConfig(gateway_token="gateway-token-for-tests", state_dir=tmp_path),
+        message_handler=FakeHermesSink(),
+    )
+    ws = FakeWebSocket()
+
+    await adapter._handle_chat_history(
+        ws,
+        "history-fixture",
+        load_fixture("chat_history_payload_aliases.json"),
+    )
+
+    assert ws.frames == [
+        {
+            "type": "res",
+            "id": "history-fixture",
+            "ok": True,
+            "payload": {
+                "sessionKey": "capture-main",
+                "messages": [],
+                "status": "unsupported",
+                "historySupported": False,
+                "storage": "none",
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio

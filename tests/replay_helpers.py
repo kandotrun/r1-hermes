@@ -23,6 +23,7 @@ class FixtureReplayFlow:
     expected_session_key: str
     expected_run_id: str
     expected_ack_events: tuple[str, ...] = ()
+    history_fixture: str | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,9 @@ async def replay_fixture_flow(
     frames: list[dict[str, Any]] = []
     connect_frame = _load_fixture(fixture_dir, flow.connect_fixture)
     chat_frame = _load_fixture(fixture_dir, flow.chat_fixture)
+    history_frame = (
+        _load_fixture(fixture_dir, flow.history_fixture) if flow.history_fixture else None
+    )
     safe_connect_frame = _safe_frame(connect_frame)
     connect_frame = _replace_text(connect_frame, {"DUMMY_GATEWAY_TOKEN_DO_NOT_USE": gateway_token})
 
@@ -79,6 +83,19 @@ async def replay_fixture_flow(
                 assert event["event"] == expected_event
                 assert event["payload"]["deviceId"] == flow.expected_device_id
 
+            if history_frame is not None:
+                frames.append(
+                    {"phase": "history_before_request", "frame": _safe_frame(history_frame)}
+                )
+                await ws.send_json(
+                    _replace_text(history_frame, {"DUMMY_DEVICE_TOKEN_DO_NOT_USE": device_token})
+                )
+                history_before = await ws.receive_json()
+                frames.append(
+                    {"phase": "history_before_response", "frame": _safe_frame(history_before)}
+                )
+                _assert_history_unsupported(history_before, session_key=flow.expected_session_key)
+
             frames.append({"phase": "chat_request", "frame": _safe_frame(chat_frame)})
             outbound_chat_frame = _replace_text(
                 chat_frame, {"DUMMY_DEVICE_TOKEN_DO_NOT_USE": device_token}
@@ -95,6 +112,19 @@ async def replay_fixture_flow(
                     {"phase": "chat_final", "frame": _safe_frame(final)},
                 ]
             )
+
+            if history_frame is not None:
+                frames.append(
+                    {"phase": "history_after_request", "frame": _safe_frame(history_frame)}
+                )
+                await ws.send_json(
+                    _replace_text(history_frame, {"DUMMY_DEVICE_TOKEN_DO_NOT_USE": device_token})
+                )
+                history_after = await ws.receive_json()
+                frames.append(
+                    {"phase": "history_after_response", "frame": _safe_frame(history_after)}
+                )
+                _assert_history_unsupported(history_after, session_key=flow.expected_session_key)
 
     assert chat_ack["ok"] is True
     assert chat_ack["payload"]["runId"] == flow.expected_run_id
@@ -163,3 +193,18 @@ def _extract_response_text(event: Mapping[str, Any]) -> str:
         if isinstance(item, Mapping) and item.get("type") == "text":
             parts.append(str(item.get("text") or ""))
     return "".join(parts)
+
+
+def _assert_history_unsupported(frame: Mapping[str, Any], *, session_key: str) -> None:
+    assert frame == {
+        "type": "res",
+        "id": "history-sample-001",
+        "ok": True,
+        "payload": {
+            "sessionKey": session_key,
+            "messages": [],
+            "status": "unsupported",
+            "historySupported": False,
+            "storage": "none",
+        },
+    }
