@@ -225,6 +225,45 @@ r1-hermes revoke --state-dir /path/to/state --device-id r1-device-id
 Expiration is not a replacement for revocation. If compromise is suspected, revoke immediately and
 rotate the gateway token instead of waiting for the age or idle timer.
 
+For a broad incident or an unknown affected set, revoke all paired devices in one command. The
+command is idempotent when the state file is empty and never prints device token values:
+
+```bash
+r1-hermes revoke --state-dir /path/to/state --all
+```
+
+Preview the affected device IDs without changing the state file:
+
+```bash
+r1-hermes revoke --state-dir /path/to/state --all --dry-run
+```
+
+## Gateway token rotation
+
+Use `rotate` when the gateway token, QR payload, QR PNG, shell history, or raw auth header may have
+leaked. The command generates a fresh `R1_HERMES_GATEWAY_TOKEN`, optionally writes it to a local
+env file, and revokes all paired devices so old device tokens cannot continue authenticating:
+
+```bash
+r1-hermes rotate \
+  --state-dir ~/.local/state/r1-hermes \
+  --env-file ~/.config/r1-hermes/r1-hermes.env
+```
+
+Default output confirms the env-file path and affected device IDs only; it does not print the new
+gateway token. Use `--dry-run` to inspect the planned env-file update and device revocation first:
+
+```bash
+r1-hermes rotate \
+  --state-dir ~/.local/state/r1-hermes \
+  --env-file ~/.config/r1-hermes/r1-hermes.env \
+  --dry-run
+```
+
+Only use `--print-token` when you intentionally need to copy the fresh bearer secret into another
+secret store. Its output is explicitly labeled as secret and must not be pasted into issues, PRs,
+chat, logs, screenshots, or shared terminals.
+
 ## Incident response
 
 Treat any leaked QR PNG, printed QR payload, gateway token, device token, or raw auth header as a
@@ -232,8 +271,9 @@ bearer-secret incident.
 
 1. Stop or firewall the gateway so the exposed secret cannot be used while you rotate it.
 2. Delete exposed QR PNGs from the host, terminals, shared folders, and backups where practical.
-3. Generate a new `R1_HERMES_GATEWAY_TOKEN` and restart `r1-hermes` with that token.
-4. Revoke affected paired devices with `r1-hermes revoke --device-id ...`.
+3. Run `r1-hermes rotate --state-dir <state-dir> --env-file <env-file>` to write a new gateway
+   token and revoke all paired device tokens without printing secrets.
+4. Restart `r1-hermes` so the new token is loaded.
 5. Generate a new QR PNG, scan it only on the intended Rabbit R1, then delete the PNG.
 6. Run `r1-hermes probe` against the intended private URL to confirm the gateway still requires
    authentication and does not print device tokens.
