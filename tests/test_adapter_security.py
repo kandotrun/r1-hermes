@@ -247,6 +247,50 @@ async def test_device_token_is_bound_to_original_device_id(running_adapter):
 
 
 @pytest.mark.asyncio
+async def test_revoked_device_token_cannot_reconnect_or_run_agent(running_adapter):
+    adapter, sink, base_url = running_adapter
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-1",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-tests"},
+                    "device": {"id": "r1-revoked"},
+                },
+            }
+        )
+        hello = await ws.receive_json()
+        device_token = hello["payload"]["auth"]["deviceToken"]
+    finally:
+        await ws.close()
+        await session.close()
+
+    assert adapter.state.revoke("r1-revoked") is True
+
+    session2, ws2 = await ws_connect(base_url)
+    try:
+        await ws2.send_json(
+            {
+                "type": "req",
+                "id": "connect-2",
+                "method": "connect",
+                "params": {"auth": {"token": device_token}, "device": {"id": "r1-revoked"}},
+            }
+        )
+        msg = await ws2.receive_json()
+        serialized = json.dumps(msg)
+        assert msg["ok"] is False
+        assert msg["error"]["code"] == "UNAUTHORIZED"
+        assert device_token not in serialized
+        assert sink.messages == []
+    finally:
+        await session2.close()
+
+
+@pytest.mark.asyncio
 async def test_malformed_json_shape_is_rejected_and_does_not_run_agent(running_adapter):
     _adapter, sink, base_url = running_adapter
     session, ws = await ws_connect(base_url)

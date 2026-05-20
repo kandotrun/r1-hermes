@@ -72,7 +72,9 @@ To write a QR PNG:
 r1-hermes qr --host 100.x.y.z --port 18789 --protocol ws --output ./r1-hermes-secret.png
 ```
 
-The QR contains the bearer token. Treat the PNG as a secret and delete it after pairing.
+The QR contains the bearer token. Treat the PNG as a secret and delete it after pairing. The
+command creates the PNG as an owner-readable file, refuses to overwrite an existing output path
+unless `--overwrite` is set, and does not print the payload JSON unless `--print-payload` is set.
 
 ## 4. Probe the running gateway before scanning with R1
 
@@ -85,6 +87,18 @@ r1-hermes probe \
 ```
 
 It prints only the assistant response; it does not print the issued device token.
+
+## Revoke a paired device
+
+If a Rabbit R1 device token or pairing QR may have been exposed, revoke the paired device before
+issuing a fresh QR:
+
+```bash
+r1-hermes revoke --device-id r1-device-id
+```
+
+Then restart the device pairing flow with a newly generated gateway token and a new QR PNG. See
+[`docs/security.md`](docs/security.md) for the full incident response checklist.
 
 ## Standalone demo gateway
 

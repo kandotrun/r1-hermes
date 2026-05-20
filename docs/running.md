@@ -35,6 +35,10 @@ r1-hermes hermes --host 100.x.y.z --port 18789
 r1-hermes qr --host 100.x.y.z --port 18789 --protocol ws --output ./r1-hermes-secret.png
 ```
 
+`r1-hermes qr` writes an owner-only PNG and fails if `--output` already exists. Use `--overwrite`
+only after confirming the old PNG is no longer needed. The command intentionally does not print the
+secret payload JSON unless `--print-payload` is supplied.
+
 Before scanning with the real device, probe the exact WebSocket flow from this machine:
 
 ```bash
@@ -45,6 +49,14 @@ Scan the QR with Rabbit R1. Delete the PNG after pairing:
 
 ```bash
 shred -u ./r1-hermes-secret.png 2>/dev/null || rm -f ./r1-hermes-secret.png
+```
+
+To reissue a QR, delete or overwrite the old PNG, generate a new gateway token, restart the gateway
+with that token, and run `r1-hermes qr` again. If the device was already paired, revoke its stored
+device token before re-pairing:
+
+```bash
+r1-hermes revoke --device-id r1-device-id
 ```
 
 ## Tool access
