@@ -85,6 +85,16 @@ def add_server_args(parser: argparse.ArgumentParser) -> None:
         help="Include diagnostic paired-device counts in /healthz responses",
     )
     parser.add_argument(
+        "--tls-cert-file",
+        default=os.environ.get("R1_HERMES_TLS_CERT_FILE", ""),
+        help="PEM certificate chain for native TLS/WSS listener; requires --tls-key-file",
+    )
+    parser.add_argument(
+        "--tls-key-file",
+        default=os.environ.get("R1_HERMES_TLS_KEY_FILE", ""),
+        help="PEM private key for native TLS/WSS listener; requires --tls-cert-file",
+    )
+    parser.add_argument(
         "--idempotency-cache-max-entries",
         type=int,
         default=int(
@@ -259,6 +269,8 @@ def main() -> None:
                 idempotency_cache_ttl_seconds=args.idempotency_cache_ttl_seconds,
                 allow_remote_health=args.allow_remote_health,
                 health_diagnostics=args.health_diagnostics,
+                tls_cert_file=Path(args.tls_cert_file) if args.tls_cert_file else None,
+                tls_key_file=Path(args.tls_key_file) if args.tls_key_file else None,
             )
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc

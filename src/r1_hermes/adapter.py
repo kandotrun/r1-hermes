@@ -10,6 +10,7 @@ import json
 import os
 import secrets
 import socket
+import ssl
 import stat
 import time
 from collections import OrderedDict, defaultdict, deque
@@ -79,10 +80,14 @@ class R1HermesConfig:
     idempotency_cache_ttl_seconds: int = DEFAULT_IDEMPOTENCY_CACHE_TTL_SECONDS
     allow_remote_health: bool = False
     health_diagnostics: bool = False
+    tls_cert_file: Path | None = None
+    tls_key_file: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.allow_public_bind and _is_wildcard_public_bind(self.host):
             raise ValueError(PUBLIC_BIND_ERROR.format(host=self.host))
+        if bool(self.tls_cert_file) != bool(self.tls_key_file):
+            raise ValueError("--tls-cert-file and --tls-key-file must be provided together")
 
     @classmethod
     def from_env(
@@ -100,6 +105,8 @@ class R1HermesConfig:
         idempotency_cache_ttl_seconds: int | None = None,
         allow_remote_health: bool | None = None,
         health_diagnostics: bool | None = None,
+        tls_cert_file: Path | None = None,
+        tls_key_file: Path | None = None,
     ) -> "R1HermesConfig":
         token = os.environ.get("R1_HERMES_GATEWAY_TOKEN", "")
         if not token:
@@ -203,6 +210,16 @@ class R1HermesConfig:
                 _env_flag("R1_HERMES_HEALTH_DIAGNOSTICS")
                 if health_diagnostics is None
                 else health_diagnostics
+            ),
+            tls_cert_file=(
+                tls_cert_file
+                if tls_cert_file is not None
+                else _optional_env_path("R1_HERMES_TLS_CERT_FILE")
+            ),
+            tls_key_file=(
+                tls_key_file
+                if tls_key_file is not None
+                else _optional_env_path("R1_HERMES_TLS_KEY_FILE")
             ),
         )
 
@@ -685,7 +702,12 @@ class R1HermesAdapter:
         self._app.router.add_get("/healthz", self._healthz)
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
-        self._site = web.TCPSite(self._runner, self.config.host, self.config.port)
+        self._site = web.TCPSite(
+            self._runner,
+            self.config.host,
+            self.config.port,
+            ssl_context=_server_ssl_context(self.config),
+        )
         await self._site.start()
 
     async def stop(self) -> None:
@@ -1341,6 +1363,22 @@ def _validate_config(config: R1HermesConfig) -> None:
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _optional_env_path(name: str) -> Path | None:
+    value = os.environ.get(name, "").strip()
+    return Path(value) if value else None
+
+
+def _server_ssl_context(config: R1HermesConfig) -> ssl.SSLContext | None:
+    if not config.tls_cert_file and not config.tls_key_file:
+        return None
+    if not config.tls_cert_file or not config.tls_key_file:
+        raise ValueError("--tls-cert-file and --tls-key-file must be provided together")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(config.tls_cert_file, config.tls_key_file)
+    return context
 
 
 def _is_wildcard_public_bind(host: str) -> bool:
