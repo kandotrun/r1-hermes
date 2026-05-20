@@ -9,7 +9,7 @@ This repository is intentionally security-first. It implements the Rabbit R1/Ope
 - no full-token logging
 - no unauthenticated admin page
 - device tokens are bound to device IDs and stored only as hashes
-- unauthenticated handshake limits plus authenticated rate, length, and concurrency limits
+- unauthenticated handshake limits plus authenticated rate, length, global concurrency, and per-device concurrency limits
 - explicit install docs and security checklist
 
 Status: runnable MVP. The default runtime is a standalone bridge that accepts Rabbit R1/OpenClaw
@@ -65,10 +65,18 @@ r1-hermes hermes \
   --host 100.x.y.z \
   --port 18789 \
   --toolsets safe,web \
+  --global-concurrency 2 \
+  --per-device-concurrency 1 \
   --timeout 180
 ```
 
 Use a Tailscale IP, firewall allowlist, or reverse proxy with mTLS or IP allowlisting when the Rabbit R1 must reach the gateway from another device. Do not use wildcard binds or expose the raw gateway directly to the public Internet.
+
+`R1_HERMES_GLOBAL_CONCURRENCY` defaults to `2`, and `R1_HERMES_PER_DEVICE_CONCURRENCY` defaults
+to `1`. A single-user Rabbit R1 deployment should usually keep those defaults. For a reviewed
+multi-device deployment, raise the global cap only to the number of simultaneous Hermes subprocesses
+the host can absorb, and keep the per-device cap low so one device cannot monopolize the gateway.
+Requests over either cap receive a generic `BUSY` response before Hermes is invoked.
 
 ## 3. Generate the Rabbit R1 QR payload
 
@@ -128,6 +136,7 @@ The demo handler echoes messages. Use `r1-hermes hermes` for a gateway that actu
 - Unauthenticated WebSocket clients are limited by peer IP before authentication. Repeated bad or
   malformed handshake attempts are closed with a policy-violation code and never reach Hermes.
 - Each device/session key resumes a stable Hermes CLI session via `hermes chat --continue r1-hermes-...`.
+- The gateway enforces global and per-device in-flight caps before starting `hermes chat`.
 - Hermes stderr is not returned to R1 to avoid leaking secrets.
 - Failures are returned as short, generic messages and details stay in local logs.
 

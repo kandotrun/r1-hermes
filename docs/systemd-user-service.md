@@ -41,6 +41,8 @@ For local-only operation, keep:
 ```ini
 R1_HERMES_HOST=127.0.0.1
 R1_HERMES_PORT=18789
+R1_HERMES_GLOBAL_CONCURRENCY=2
+R1_HERMES_PER_DEVICE_CONCURRENCY=1
 ```
 
 For direct tailnet operation, use the host's Tailscale IP instead of a wildcard bind:
@@ -48,7 +50,14 @@ For direct tailnet operation, use the host's Tailscale IP instead of a wildcard 
 ```ini
 R1_HERMES_HOST=100.x.y.z
 R1_HERMES_PORT=18789
+R1_HERMES_GLOBAL_CONCURRENCY=2
+R1_HERMES_PER_DEVICE_CONCURRENCY=1
 ```
+
+The concurrency defaults are sized for one personal Rabbit R1. In a multi-device deployment, raise
+`R1_HERMES_GLOBAL_CONCURRENCY` only to the number of simultaneous Hermes subprocesses the host can
+run comfortably. Keep `R1_HERMES_PER_DEVICE_CONCURRENCY=1` unless one trusted device is explicitly
+allowed to consume multiple slots.
 
 If `r1-hermes` is not installed at `~/.local/bin/r1-hermes`, override `ExecStart` with the exact absolute path and keep the command shell-free:
 
@@ -59,7 +68,7 @@ systemctl --user edit r1-hermes.service
 ```ini
 [Service]
 ExecStart=
-ExecStart=/absolute/path/to/r1-hermes hermes --host ${R1_HERMES_HOST} --port ${R1_HERMES_PORT} --state-dir %h/.local/state/r1-hermes --ready-file %t/r1-hermes/ready --toolsets ${R1_HERMES_TOOLSETS} --timeout ${R1_HERMES_TIMEOUT}
+ExecStart=/absolute/path/to/r1-hermes hermes --host ${R1_HERMES_HOST} --port ${R1_HERMES_PORT} --state-dir %h/.local/state/r1-hermes --ready-file %t/r1-hermes/ready --toolsets ${R1_HERMES_TOOLSETS} --timeout ${R1_HERMES_TIMEOUT} --global-concurrency ${R1_HERMES_GLOBAL_CONCURRENCY} --per-device-concurrency ${R1_HERMES_PER_DEVICE_CONCURRENCY}
 ```
 
 ## Enable

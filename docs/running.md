@@ -37,6 +37,23 @@ r1-hermes hermes --host 100.x.y.z --port 18789
 r1-hermes qr --host 100.x.y.z --port 18789 --protocol ws --output ./r1-hermes-secret.png
 ```
 
+The gateway starts at most two Hermes subprocess-backed chat runs at once by default, and at most
+one per authenticated device ID:
+
+```bash
+r1-hermes hermes \
+  --host 100.x.y.z \
+  --port 18789 \
+  --global-concurrency 2 \
+  --per-device-concurrency 1
+```
+
+The same settings can be supplied through `R1_HERMES_GLOBAL_CONCURRENCY` and
+`R1_HERMES_PER_DEVICE_CONCURRENCY`. Keep `2`/`1` for one personal Rabbit R1. For multiple trusted
+devices, increase only the global cap to the number of concurrent Hermes subprocesses the host can
+comfortably run; keep the per-device cap low unless one device is intentionally allowed to occupy
+several slots. Requests over either cap receive `BUSY` before Hermes is invoked.
+
 `r1-hermes qr` writes an owner-only PNG and fails if `--output` already exists. Use `--overwrite`
 only after confirming the old PNG is no longer needed. The command intentionally does not print the
 secret payload JSON unless `--print-payload` is supplied.
@@ -143,6 +160,7 @@ What works now:
 - Authenticated text `chat.send` requests after `connect`.
 - Stable Hermes CLI continuation sessions per R1 `device.id` and `sessionKey`.
 - Local `safe` toolset by default, with explicit `--toolsets` expansion.
+- Global and per-device in-flight caps before Hermes subprocess execution.
 - Generic started/final/error chat events back to the active WebSocket.
 
 What does not work in the standalone bridge:
@@ -186,7 +204,7 @@ Plugin platform package:
 The prototype in `src/r1_hermes/native_gateway.py` covers the local side of that design without
 taking a runtime dependency on the Hermes repository. `R1NativeGatewayAdapter` keeps the same
 localhost/private-network defaults, token authentication, device-token hashing, rate limits, message
-length limits, and generic error events as the standalone adapter. Its `R1GatewayMessageBridge`
+length limits, global/per-device concurrency limits, and generic error events as the standalone adapter. Its `R1GatewayMessageBridge`
 converts `chat.send` into a dependency-free `R1GatewayMessageEvent` with these stable fields:
 
 - `platform`: `rabbit_r1`

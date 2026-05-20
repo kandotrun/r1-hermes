@@ -96,6 +96,8 @@ r1-hermes hermes \
   --host 127.0.0.1 \
   --port 18789 \
   --toolsets safe \
+  --global-concurrency 2 \
+  --per-device-concurrency 1 \
   --ready-file /tmp/r1-hermes.ready
 ```
 
@@ -147,8 +149,16 @@ r1-hermes hermes \
   --host <REACHABLE_HOST> \
   --port 18789 \
   --toolsets safe \
+  --global-concurrency 2 \
+  --per-device-concurrency 1 \
   --ready-file /tmp/r1-hermes.ready
 ```
+
+Keep the default process caps for normal setup: `--global-concurrency 2` and
+`--per-device-concurrency 1`. Raise the global cap only when the human has reviewed the host's
+capacity and expects multiple trusted devices to talk at once. Do not raise the per-device cap for
+an R1 device unless the human explicitly accepts that one device can occupy multiple Hermes
+subprocess slots.
 
 For a long-running setup, use a process supervisor such as systemd/tmux according to the human's environment. The minimal requirement is that the process remains running while Rabbit R1 pairs and sends messages.
 
