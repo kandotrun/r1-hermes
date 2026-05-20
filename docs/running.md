@@ -435,6 +435,12 @@ What works now:
 - Per-device/session `chat.send` dedupe by `idempotencyKey`, returning `BUSY_DUPLICATE` for an
   active duplicate and replaying the cached final event for a recent completed duplicate.
 - Generic started/final/error chat events back to the active WebSocket.
+- `chat.history` compatibility responses after authentication. History is intentionally unsupported
+  in this standalone bridge: known and unknown `sessionKey` values both receive an empty
+  `messages` array plus `status: "unsupported"`, `historySupported: false`, and `storage: "none"`.
+  The gateway does not keep a transcript, prompt text, assistant replies, tokens, QR payloads, or
+  auth headers for history replay. Reconnect continuity comes only from the stable Hermes CLI
+  continuation name used by later `chat.send` calls, not from R1-visible history storage.
 
 What does not work in the standalone bridge:
 
@@ -444,6 +450,7 @@ What does not work in the standalone bridge:
 - Gateway send/proactive delivery queues for offline or never-activated sessions.
 - Native media, attachment, STT, and TTS mapping.
 - Full Hermes Gateway session, channel, and user semantics.
+- R1-visible conversation transcript replay through `chat.history`.
 
 ## Native Hermes Gateway path
 
@@ -507,6 +514,8 @@ high-impact platform toolsets behind the same explicit allowlist.
 No external DB migration is needed for the current `r1-hermes` standalone bridge or the local
 native prototype; both continue to use the local `devices.json` state file. On first successful
 device-token reconnect, older unkeyed SHA-256 records are upgraded in place to keyed HMAC digests.
+The `chat.history` compatibility contract stores no history, so it adds no local state-file
+migration and no persistence compatibility plan.
 The prototype uses platform name `rabbit_r1` and session ID `r1:<device_id>:<session_key>`. Moving
 an existing CLI deployment to a future Hermes-native platform can change the Hermes
 conversation/session identity because the standalone bridge currently uses

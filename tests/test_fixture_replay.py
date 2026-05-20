@@ -73,6 +73,7 @@ def test_official_helper_qr_payload_fixture_matches_generated_shape():
         FixtureReplayFlow(
             connect_fixture="connect_official_helper.json",
             chat_fixture="chat_send_payload_aliases.json",
+            history_fixture="chat_history_payload_aliases.json",
             expected_device_id="r1-official-helper",
             expected_message="hello Hermes from sanitized capture",
             expected_session_key="capture-main",

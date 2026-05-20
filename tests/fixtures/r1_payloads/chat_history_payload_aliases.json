@@ -1,0 +1,15 @@
+{
+  "type": "req",
+  "id": "history-sample-001",
+  "method": "chat.history",
+  "payload": {
+    "session": {
+      "id": "capture-main"
+    },
+    "limit": 20,
+    "auth": {
+      "deviceToken": "DUMMY_DEVICE_TOKEN_DO_NOT_USE"
+    },
+    "unknownCaptureField": "ignored"
+  }
+}

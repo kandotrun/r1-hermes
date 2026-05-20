@@ -23,6 +23,7 @@ from .audit import audit_log, hash_identifier
 from .chat_errors import ChatRunError, ChatRunTimeoutError
 from .payloads import (
     PayloadParseError,
+    parse_chat_history_params,
     parse_chat_send_params,
     parse_connect_params,
     request_params,
@@ -914,7 +915,7 @@ class R1HermesAdapter:
         self, ws: web.WebSocketResponse, rid: Any, frame: dict[str, Any]
     ) -> None:
         try:
-            params = request_params(frame)
+            history_request = parse_chat_history_params(request_params(frame))
         except PayloadParseError as exc:
             await _send_error(ws, rid, exc.code, exc.message)
             return
@@ -924,8 +925,11 @@ class R1HermesAdapter:
                 "id": rid,
                 "ok": True,
                 "payload": {
-                    "sessionKey": params.get("sessionKey", "main"),
+                    "sessionKey": history_request.session_key,
                     "messages": [],
+                    "status": "unsupported",
+                    "historySupported": False,
+                    "storage": "none",
                 },
             }
         )
