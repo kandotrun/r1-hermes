@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build-release:
+    name: Build release artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify clean checkout and tag version
+        run: |
+          test -z "$(git status --short)"
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          ref_name = os.environ.get("GITHUB_REF_NAME", "")
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          if ref_name.startswith("v") and ref_name != f"v{version}":
+              raise SystemExit(f"tag {ref_name} does not match pyproject version {version}")
+          PY
+      - name: Install build tools
+        run: python -m pip install --upgrade pip build
+      - name: Build wheel and sdist
+        run: python -m build --sdist --wheel
+      - name: Inspect artifact contents
+        run: |
+          python - <<'PY'
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          forbidden = (
+              ".env",
+              ".r1-hermes",
+              "device-token-hmac",
+              "devices.json",
+              "r1-hermes-secret",
+              "r1-hermes.ready",
+              "tests/fixtures/r1_payloads",
+          )
+          artifacts = [*Path("dist").glob("*.whl"), *Path("dist").glob("*.tar.gz")]
+          if not artifacts:
+              raise SystemExit("no release artifacts built")
+          for artifact in artifacts:
+              if artifact.suffix == ".whl":
+                  with zipfile.ZipFile(artifact) as archive:
+                      names = archive.namelist()
+              else:
+                  with tarfile.open(artifact, "r:gz") as archive:
+                      names = archive.getnames()
+              for name in names:
+                  normalized = name.replace("\\", "/")
+                  if any(part in normalized for part in forbidden):
+                      raise SystemExit(f"forbidden path in {artifact}: {normalized}")
+          PY
+      - name: Generate dependency report
+        run: |
+          python -m venv "$RUNNER_TEMP/release-inspect"
+          "$RUNNER_TEMP/release-inspect/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/release-inspect/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/release-inspect/bin/python" -m pip check
+          "$RUNNER_TEMP/release-inspect/bin/python" -m pip freeze --all > dist/r1-hermes-dependencies.txt
+          "$RUNNER_TEMP/release-inspect/bin/python" -m pip inspect --local > dist/r1-hermes-pip-inspect.json
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum *.whl *.tar.gz r1-hermes-dependencies.txt r1-hermes-pip-inspect.json > SHA256SUMS
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            dist/r1-hermes-dependencies.txt
+            dist/r1-hermes-pip-inspect.json
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/*.whl \
+            dist/*.tar.gz \
+            dist/SHA256SUMS \
+            dist/r1-hermes-dependencies.txt \
+            dist/r1-hermes-pip-inspect.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes

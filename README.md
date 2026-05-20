@@ -27,6 +27,21 @@ If you hand this repository to Hermes Agent or another autonomous agent and want
 Supported Python versions: Python 3.10 and newer. CI currently exercises Python 3.10,
 3.11, and 3.12.
 
+For normal operator installs, prefer GitHub release artifacts over editable source installs. Download
+the wheel and `SHA256SUMS` from the release page, verify the checksum, then install the wheel with
+the QR extra:
+
+```bash
+sha256sum -c SHA256SUMS
+python -m pip install ./r1_hermes-<version>-py3-none-any.whl[qr]
+```
+
+The release workflow also publishes dependency reports and GitHub artifact attestations. See
+[`docs/release.md`](docs/release.md) for the versioning policy, provenance verification, artifact
+contents, and secret-exclusion rules.
+
+Editable installs are for development or autonomous-agent setup from a trusted checkout:
+
 ```bash
 git clone https://github.com/kandotrun/r1-hermes.git
 cd r1-hermes

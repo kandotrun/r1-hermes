@@ -16,3 +16,15 @@ headers, logs containing secrets, or real Rabbit R1 captures in public reports.
 
 Authentication bypasses, token disclosure, unsafe network exposure, shell injection, and command
 execution boundary failures are handled as release blockers.
+
+## Release Artifact Security
+
+GitHub release artifacts must include wheel and sdist distributions, `SHA256SUMS`, dependency
+reports, and GitHub release provenance where available. Verify release downloads with `SHA256SUMS`
+and, when supported, `gh attestation verify` before installing on a gateway host.
+
+Release archives and dependency reports must not contain gateway tokens, device tokens, QR payload
+JSON, QR PNG files, raw authorization headers, `.env` files, `.r1-hermes/` state, `devices.json`,
+or `device-token-hmac.key`. If any GitHub release artifacts or workflow logs expose those values,
+treat the release as compromised, rotate the gateway token, revoke affected device tokens, and
+regenerate pairing QR files.
