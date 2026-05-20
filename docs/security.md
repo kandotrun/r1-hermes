@@ -19,7 +19,7 @@ For supported Python versions and disclosure routing, see [`../README.md`](../RE
 2. Default bind is `127.0.0.1`; LAN/Tailscale exposure must be explicit.
 3. Never log or render full gateway tokens or device tokens.
 4. No unauthenticated admin UI.
-5. Device tokens are stored as SHA-256 hashes under a `0700` state directory and bound to the original `device.id`.
+5. Device tokens are stored as keyed HMAC-SHA-256 digests under a `0700` state directory and bound to the original `device.id`.
 6. Unauthenticated handshake limits are enforced by peer IP before authentication.
 7. Authenticated rate limit, length limit, global concurrency limit, and per-device concurrency limit are enforced before Hermes execution.
 8. QR payloads contain secrets and must be shared/retained accordingly.
@@ -67,8 +67,28 @@ adapter or plugin must retain these properties before it can replace the standal
 2. Operator builds a Rabbit R1 QR payload containing host, port, protocol, and token.
 3. R1 connects and sends `connect` or the compatible `gateway.connect` variant with the gateway
    token and `device.id`.
-4. Adapter issues a per-device token, stores only its hash, and sends the token to the device.
+4. Adapter issues a per-device token, stores only a keyed digest, and sends the token to the device.
 5. Future connects may use the device token only with the same `device.id`.
+
+## Device-token storage
+
+The state directory contains two local files:
+
+- `devices.json`: paired device IDs, display names, timestamps, and device-token verifier digests.
+- `device-token-hmac.key`: a locally generated HMAC key used only for device-token digests.
+
+Both files are written with owner-only `0600` permissions, and the state directory is forced to
+`0700`. New records use `hmac-sha256:v1:<digest>` rather than raw `SHA-256(token)`, so copying only
+`devices.json` is not enough to perform offline token analysis without the local HMAC key. The HMAC
+key is not derived from `R1_HERMES_GATEWAY_TOKEN`, is not included in QR payloads, and must not be
+logged, pasted into issue comments, committed, or sent to Rabbit R1.
+
+Existing local records from older releases may contain unkeyed SHA-256 device-token hashes. For
+backward compatibility, a valid legacy device token is accepted once and the record is rewritten as
+an `hmac-sha256:v1` digest immediately after successful authentication. Invalid legacy tokens are
+not upgraded. If the local HMAC key file is deleted while `devices.json` remains, already keyed
+records cannot be verified with the newly generated key; revoke or remove the stale state and pair
+the device again with a fresh QR.
 
 ## OpenClaw/Rabbit compatibility scope
 
@@ -131,7 +151,7 @@ generate a new QR. Do not reuse a QR after it has left the operator's control.
 ## Device revoke
 
 Use revoke when an R1 is lost, sold, reset, shared with the wrong operator, or when its device token
-may have been captured. Revocation removes the device token hash from the local state file; the
+may have been captured. Revocation removes the device-token digest from the local state file; the
 device must complete a fresh gateway-token pairing flow before it can send chat requests again.
 
 ```bash

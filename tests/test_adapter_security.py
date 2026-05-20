@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import stat
 from pathlib import Path
@@ -1124,4 +1125,98 @@ def test_device_state_permissions_are_owner_only(tmp_path):
     token = state.issue_device_token("r1-test")
     assert token
     assert stat.S_IMODE(state.state_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE(state.key_path.stat().st_mode) == 0o600
     assert stat.S_IMODE(state.path.stat().st_mode) == 0o600
+
+
+def test_device_state_uses_keyed_digest_for_new_records(tmp_path):
+    from r1_hermes.adapter import DeviceState
+
+    state = DeviceState(tmp_path / "state")
+    token = state.issue_device_token("r1-test")
+
+    token_hash = state.devices["r1-test"].token_hash
+    raw_sha256 = hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    assert token_hash.startswith("hmac-sha256:v1:")
+    assert token_hash != raw_sha256
+    assert token not in state.path.read_text()
+    assert raw_sha256 not in state.path.read_text()
+
+
+def test_device_state_upgrades_legacy_sha256_digest_after_valid_auth(tmp_path):
+    from r1_hermes.adapter import DeviceState
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    token = "legacy-device-token-for-tests"
+    legacy_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    state_path = state_dir / "devices.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "devices": {
+                    "r1-legacy": {
+                        "device_id": "r1-legacy",
+                        "token_hash": legacy_hash,
+                        "display_name": "Rabbit R1",
+                        "created_at_ms": 1000,
+                        "last_seen_at_ms": 1000,
+                    }
+                }
+            }
+        )
+    )
+    state_path.chmod(0o600)
+
+    state = DeviceState(state_dir)
+
+    assert state.verify_device_token("r1-legacy", token) is True
+
+    upgraded_hash = state.devices["r1-legacy"].token_hash
+    saved_hash = json.loads(state_path.read_text())["devices"]["r1-legacy"]["token_hash"]
+    assert upgraded_hash.startswith("hmac-sha256:v1:")
+    assert saved_hash == upgraded_hash
+    assert upgraded_hash != legacy_hash
+    assert stat.S_IMODE(state.key_path.stat().st_mode) == 0o600
+
+
+def test_device_state_does_not_upgrade_legacy_sha256_digest_after_invalid_auth(tmp_path):
+    from r1_hermes.adapter import DeviceState
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    legacy_hash = hashlib.sha256(b"correct-device-token").hexdigest()
+    state_path = state_dir / "devices.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "devices": {
+                    "r1-legacy": {
+                        "device_id": "r1-legacy",
+                        "token_hash": legacy_hash,
+                    }
+                }
+            }
+        )
+    )
+    state_path.chmod(0o600)
+
+    state = DeviceState(state_dir)
+
+    assert state.verify_device_token("r1-legacy", "wrong-device-token") is False
+    assert state.devices["r1-legacy"].token_hash == legacy_hash
+    assert json.loads(state_path.read_text())["devices"]["r1-legacy"]["token_hash"] == legacy_hash
+
+
+def test_device_state_rejects_symlinked_digest_key(tmp_path):
+    from r1_hermes.adapter import DeviceState
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    target = tmp_path / "external-key"
+    target.write_text("00" * 32)
+    (state_dir / "device-token-hmac.key").symlink_to(target)
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        DeviceState(state_dir)

@@ -8,7 +8,7 @@ This repository is intentionally security-first. It implements the Rabbit R1/Ope
 - localhost bind by default
 - no full-token logging
 - no unauthenticated admin page
-- device tokens are bound to device IDs and stored only as hashes
+- device tokens are bound to device IDs and stored only as keyed HMAC digests
 - unauthenticated handshake limits plus authenticated rate, length, global concurrency, and per-device concurrency limits
 - explicit install docs and security checklist
 
@@ -93,6 +93,13 @@ r1-hermes qr --host 100.x.y.z --port 18789 --protocol ws --output ./r1-hermes-se
 The QR contains the bearer token. Treat the PNG as a secret and delete it after pairing. The
 command creates the PNG as an owner-readable file, refuses to overwrite an existing output path
 unless `--overwrite` is set, and does not print the payload JSON unless `--print-payload` is set.
+
+Paired-device state lives under `--state-dir` (default `~/.r1-hermes`). The adapter stores
+device-token verifiers as `hmac-sha256:v1` digests keyed by a locally generated
+`device-token-hmac.key` file with owner-only permissions; the key is separate from the QR/gateway
+token and must not be copied into issues, logs, or PR text. Older unkeyed SHA-256 records are
+accepted once for backward compatibility and rewritten as keyed digests after a successful device
+token authentication.
 
 ## 4. Probe the running gateway before scanning with R1
 
