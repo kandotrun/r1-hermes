@@ -1,0 +1,30 @@
+{
+  "type": "req",
+  "id": "chat-openclaw-ui-001",
+  "method": "chat.send",
+  "params": {
+    "message": {
+      "content": [
+        {
+          "type": "input_text",
+          "text": "hello Hermes"
+        },
+        {
+          "type": "text",
+          "text": " from OpenClaw UI fixture"
+        },
+        {
+          "type": "input_audio",
+          "data": "DUMMY_AUDIO_BYTES_OMITTED"
+        }
+      ]
+    },
+    "session": {
+      "key": "openclaw-ui-main"
+    },
+    "idempotency_key": "openclaw-ui-run-001",
+    "auth": {
+      "deviceToken": "DUMMY_DEVICE_TOKEN_DO_NOT_USE"
+    }
+  }
+}

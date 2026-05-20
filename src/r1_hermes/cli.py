@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import sys
 from pathlib import Path
 
 from .adapter import DeviceState, R1HermesAdapter, R1HermesConfig
@@ -86,6 +87,11 @@ def main() -> None:
         default="connect",
         help="Handshake method to exercise during the probe",
     )
+    probe.add_argument(
+        "--dump-frames",
+        action="store_true",
+        help="Print redacted WebSocket frames for compatibility debugging",
+    )
 
     args = parser.parse_args()
     if args.command in {"payload", "qr", "probe"} and not args.token:
@@ -135,6 +141,8 @@ def main() -> None:
                 device_id=args.device_id,
                 timeout_seconds=args.timeout,
                 connect_method=args.connect_method,
+                dump_frames=args.dump_frames,
+                frame_sink=lambda line: print(line, file=sys.stderr),
             ).send_message(args.message, session_key=args.session_key)
         )
         print(result.response_text)

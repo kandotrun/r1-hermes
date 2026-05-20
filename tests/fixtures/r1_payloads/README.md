@@ -9,5 +9,6 @@ Rules for adding captures:
 - Do not include personal messages, account identifiers, exact network addresses, or full timestamps from a real device.
 - Prefer one small JSON file per frame shape so parser regressions are easy to review.
 
-Current fixtures cover the standard helper `connect` shape, a `gateway.connect` community-shim
-shape, and `chat.send` alias parsing. These are sanitized compatibility samples, not raw captures.
+Current fixtures cover the official helper QR payload shape, the standard helper `connect` shape,
+OpenClaw/community `gateway.connect` variants, and `chat.send` alias parsing. These are sanitized
+compatibility samples, not raw captures.

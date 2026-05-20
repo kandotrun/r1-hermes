@@ -6,7 +6,17 @@ from r1_hermes import cli
 class FakeProbeClient:
     calls = []
 
-    def __init__(self, *, url, token, device_id, timeout_seconds, connect_method="connect"):
+    def __init__(
+        self,
+        *,
+        url,
+        token,
+        device_id,
+        timeout_seconds,
+        connect_method="connect",
+        dump_frames=False,
+        frame_sink=None,
+    ):
         self.calls.append(
             {
                 "url": url,
@@ -14,6 +24,8 @@ class FakeProbeClient:
                 "device_id": device_id,
                 "timeout_seconds": timeout_seconds,
                 "connect_method": connect_method,
+                "dump_frames": dump_frames,
+                "frame_sink": frame_sink is not None,
             }
         )
 
@@ -58,6 +70,8 @@ def test_probe_command_sends_message_without_printing_device_token(monkeypatch, 
             "device_id": "r1-test",
             "timeout_seconds": 30.0,
             "connect_method": "connect",
+            "dump_frames": False,
+            "frame_sink": True,
         },
         {"message": "hello", "session_key": "main"},
     ]
@@ -86,6 +100,31 @@ def test_probe_command_accepts_gateway_connect_variant(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "probe ok" in out
     assert FakeProbeClient.calls[0]["connect_method"] == "gateway.connect"
+
+
+def test_probe_command_enables_safe_frame_dump(monkeypatch, capsys):
+    FakeProbeClient.calls = []
+    monkeypatch.setattr(cli, "R1ProbeClient", FakeProbeClient)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "probe",
+            "--url",
+            "ws://127.0.0.1:18789/",
+            "--dump-frames",
+            "--message",
+            "hello",
+        ],
+    )
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "probe ok" in out
+    assert FakeProbeClient.calls[0]["dump_frames"] is True
+    assert FakeProbeClient.calls[0]["frame_sink"] is True
 
 
 def test_probe_command_requires_token(monkeypatch):

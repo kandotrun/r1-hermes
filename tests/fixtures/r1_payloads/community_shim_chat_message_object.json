@@ -1,0 +1,17 @@
+{
+  "type": "req",
+  "id": "chat-community-shim-001",
+  "method": "chat.send",
+  "payload": {
+    "message": {
+      "body": "hello Hermes from community shim fixture"
+    },
+    "conversation": {
+      "id": "community-main"
+    },
+    "runId": "community-run-001",
+    "auth": {
+      "deviceToken": "DUMMY_DEVICE_TOKEN_DO_NOT_USE"
+    }
+  }
+}
