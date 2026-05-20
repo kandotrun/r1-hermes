@@ -13,6 +13,8 @@ from .adapter import (
     DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS,
     DEFAULT_DEVICE_TOKEN_MAX_AGE_SECONDS,
     DEFAULT_GLOBAL_CONCURRENCY,
+    DEFAULT_IDEMPOTENCY_CACHE_MAX_ENTRIES,
+    DEFAULT_IDEMPOTENCY_CACHE_TTL_SECONDS,
     STATE_FILE,
     DeviceState,
     R1HermesAdapter,
@@ -81,6 +83,28 @@ def add_server_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         default=_env_flag("R1_HERMES_HEALTH_DIAGNOSTICS"),
         help="Include diagnostic paired-device counts in /healthz responses",
+    )
+    parser.add_argument(
+        "--idempotency-cache-max-entries",
+        type=int,
+        default=int(
+            os.environ.get(
+                "R1_HERMES_IDEMPOTENCY_CACHE_MAX_ENTRIES",
+                str(DEFAULT_IDEMPOTENCY_CACHE_MAX_ENTRIES),
+            )
+        ),
+        help="Maximum in-memory chat.send idempotency keys to keep; 0 disables dedupe",
+    )
+    parser.add_argument(
+        "--idempotency-cache-ttl-seconds",
+        type=int,
+        default=int(
+            os.environ.get(
+                "R1_HERMES_IDEMPOTENCY_CACHE_TTL_SECONDS",
+                str(DEFAULT_IDEMPOTENCY_CACHE_TTL_SECONDS),
+            )
+        ),
+        help="Seconds to keep completed chat.send idempotency keys in memory",
     )
     add_device_expiry_args(parser)
 
@@ -231,6 +255,8 @@ def main() -> None:
                 global_concurrency=args.global_concurrency,
                 device_token_max_age_seconds=args.device_token_max_age_seconds,
                 device_token_idle_timeout_seconds=args.device_token_idle_timeout_seconds,
+                idempotency_cache_max_entries=args.idempotency_cache_max_entries,
+                idempotency_cache_ttl_seconds=args.idempotency_cache_ttl_seconds,
                 allow_remote_health=args.allow_remote_health,
                 health_diagnostics=args.health_diagnostics,
             )

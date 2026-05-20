@@ -86,6 +86,14 @@ multi-device deployment, raise the global cap only to the number of simultaneous
 the host can absorb, and keep the per-device cap low so one device cannot monopolize the gateway.
 Requests over either cap receive a generic `BUSY` response before Hermes is invoked.
 
+Authenticated `chat.send` requests with an `idempotencyKey` are deduplicated per device and
+`sessionKey` in a bounded in-memory cache. A retry while the original Hermes run is still active
+receives `BUSY_DUPLICATE` and does not start another subprocess; a retry shortly after completion
+receives a duplicate acknowledgement and replay of the cached final chat event. The cache defaults
+to 256 entries and 5 minutes. Tune with `R1_HERMES_IDEMPOTENCY_CACHE_MAX_ENTRIES` and
+`R1_HERMES_IDEMPOTENCY_CACHE_TTL_SECONDS`, or the matching server CLI options, only when a
+deployment has reviewed the retry window and memory tradeoff.
+
 Wildcard bind hosts such as `0.0.0.0`, `::`, and numeric aliases for all interfaces fail closed by default.
 If you have explicitly reviewed the network boundary and still need a wildcard bind, opt in with
 `--allow-public-bind` or `R1_HERMES_ALLOW_PUBLIC_BIND=1`; otherwise prefer `127.0.0.1` plus

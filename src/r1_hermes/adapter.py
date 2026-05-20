@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import binascii
+import copy
 import hashlib
 import hmac
 import ipaddress
@@ -11,7 +12,7 @@ import secrets
 import socket
 import stat
 import time
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,8 @@ PUBLIC_BIND_ERROR = (
 )
 DEFAULT_DEVICE_TOKEN_MAX_AGE_SECONDS = 90 * 24 * 60 * 60
 DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS = 30 * 24 * 60 * 60
+DEFAULT_IDEMPOTENCY_CACHE_MAX_ENTRIES = 256
+DEFAULT_IDEMPOTENCY_CACHE_TTL_SECONDS = 5 * 60
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,8 @@ class R1HermesConfig:
     unauthenticated_cooldown_seconds: int = DEFAULT_UNAUTHENTICATED_COOLDOWN_SECONDS
     device_token_max_age_seconds: int = DEFAULT_DEVICE_TOKEN_MAX_AGE_SECONDS
     device_token_idle_timeout_seconds: int = DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS
+    idempotency_cache_max_entries: int = DEFAULT_IDEMPOTENCY_CACHE_MAX_ENTRIES
+    idempotency_cache_ttl_seconds: int = DEFAULT_IDEMPOTENCY_CACHE_TTL_SECONDS
     allow_remote_health: bool = False
     health_diagnostics: bool = False
 
@@ -91,6 +96,8 @@ class R1HermesConfig:
         global_concurrency: int | None = None,
         device_token_max_age_seconds: int | None = None,
         device_token_idle_timeout_seconds: int | None = None,
+        idempotency_cache_max_entries: int | None = None,
+        idempotency_cache_ttl_seconds: int | None = None,
         allow_remote_health: bool | None = None,
         health_diagnostics: bool | None = None,
     ) -> "R1HermesConfig":
@@ -169,6 +176,22 @@ class R1HermesConfig:
                 else os.environ.get(
                     "R1_HERMES_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS",
                     str(DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS),
+                )
+            ),
+            idempotency_cache_max_entries=int(
+                idempotency_cache_max_entries
+                if idempotency_cache_max_entries is not None
+                else os.environ.get(
+                    "R1_HERMES_IDEMPOTENCY_CACHE_MAX_ENTRIES",
+                    str(DEFAULT_IDEMPOTENCY_CACHE_MAX_ENTRIES),
+                )
+            ),
+            idempotency_cache_ttl_seconds=int(
+                idempotency_cache_ttl_seconds
+                if idempotency_cache_ttl_seconds is not None
+                else os.environ.get(
+                    "R1_HERMES_IDEMPOTENCY_CACHE_TTL_SECONDS",
+                    str(DEFAULT_IDEMPOTENCY_CACHE_TTL_SECONDS),
                 )
             ),
             allow_remote_health=(
@@ -512,6 +535,112 @@ class UnauthenticatedPeerLimiter:
         return until is not None and now < until
 
 
+@dataclass
+class IdempotencyCacheEntry:
+    run_id: str
+    session_key: str
+    state: str
+    updated_at: float
+    final_event: dict[str, Any] | None = None
+
+
+class IdempotencyCache:
+    """Bounded in-memory chat.send idempotency cache scoped by device/session."""
+
+    def __init__(self, *, max_entries: int, ttl_seconds: int):
+        self.max_entries = max(0, int(max_entries))
+        self.ttl_seconds = max(1, int(ttl_seconds))
+        self._entries: OrderedDict[tuple[str, str, str], IdempotencyCacheEntry] = OrderedDict()
+
+    def get(
+        self,
+        *,
+        device_id: str,
+        session_key: str,
+        idempotency_key: str,
+    ) -> IdempotencyCacheEntry | None:
+        now = time.monotonic()
+        self._prune(now=now)
+        key = self._key(device_id, session_key, idempotency_key)
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        entry.updated_at = now
+        self._entries.move_to_end(key)
+        return entry
+
+    def reserve(
+        self,
+        *,
+        device_id: str,
+        session_key: str,
+        idempotency_key: str,
+        run_id: str,
+    ) -> None:
+        if self.max_entries <= 0:
+            return
+        now = time.monotonic()
+        self._prune(now=now)
+        self._entries[self._key(device_id, session_key, idempotency_key)] = IdempotencyCacheEntry(
+            run_id=run_id,
+            session_key=session_key,
+            state="inflight",
+            updated_at=now,
+        )
+        self._evict_over_limit()
+
+    def complete(
+        self,
+        *,
+        device_id: str,
+        session_key: str,
+        idempotency_key: str,
+        run_id: str,
+        final_event: dict[str, Any],
+    ) -> None:
+        key = self._key(device_id, session_key, idempotency_key)
+        entry = self._entries.get(key)
+        if entry is None or entry.run_id != run_id:
+            return
+        entry.state = "completed"
+        entry.updated_at = time.monotonic()
+        entry.final_event = copy.deepcopy(final_event)
+        self._entries.move_to_end(key)
+        self._evict_over_limit()
+
+    def discard(
+        self,
+        *,
+        device_id: str,
+        session_key: str,
+        idempotency_key: str,
+        run_id: str,
+    ) -> None:
+        key = self._key(device_id, session_key, idempotency_key)
+        entry = self._entries.get(key)
+        if entry is not None and entry.run_id == run_id:
+            self._entries.pop(key, None)
+
+    def _prune(self, *, now: float) -> None:
+        expired = [
+            key for key, entry in self._entries.items() if now - entry.updated_at > self.ttl_seconds
+        ]
+        for key in expired:
+            self._entries.pop(key, None)
+
+    def _evict_over_limit(self) -> None:
+        while len(self._entries) > self.max_entries:
+            self._entries.popitem(last=False)
+
+    def __len__(self) -> int:
+        self._prune(now=time.monotonic())
+        return len(self._entries)
+
+    @staticmethod
+    def _key(device_id: str, session_key: str, idempotency_key: str) -> tuple[str, str, str]:
+        return device_id, session_key, idempotency_key
+
+
 class R1HermesAdapter:
     """Hardened OpenClaw-compatible WebSocket adapter.
 
@@ -545,6 +674,10 @@ class R1HermesAdapter:
         self._inflight_by_device: dict[str, int] = defaultdict(int)
         self._global_inflight = 0
         self._inflight_lock = asyncio.Lock()
+        self._idempotency_cache = IdempotencyCache(
+            max_entries=config.idempotency_cache_max_entries,
+            ttl_seconds=config.idempotency_cache_ttl_seconds,
+        )
 
     async def start(self) -> None:
         self._app = web.Application()
@@ -861,7 +994,49 @@ class R1HermesAdapter:
             )
             await _send_error(ws, rid, "MESSAGE_TOO_LARGE", "message exceeds limit")
             return
-        if not self._rate_limiter.allow(device_id):
+
+        run_id = str(chat_request.idempotency_key or rid or secrets.token_hex(8))
+        session_key = chat_request.session_key
+        idempotency_key = chat_request.idempotency_key
+        busy = False
+        busy_reason = ""
+        global_inflight = 0
+        device_inflight = 0
+        rate_limited = False
+        duplicate_entry: IdempotencyCacheEntry | None = None
+        async with self._inflight_lock:
+            global_inflight = self._global_inflight
+            device_inflight = self._inflight_by_device[device_id]
+            if idempotency_key:
+                duplicate_entry = self._idempotency_cache.get(
+                    device_id=device_id,
+                    session_key=session_key,
+                    idempotency_key=idempotency_key,
+                )
+            if duplicate_entry is not None:
+                pass
+            elif not self._rate_limiter.allow(device_id):
+                rate_limited = True
+            elif self._global_inflight >= self.config.global_concurrency:
+                busy = True
+                busy_reason = "global_concurrency"
+            elif self._inflight_by_device[device_id] >= self.config.per_device_concurrency:
+                busy = True
+                busy_reason = "per_device_concurrency"
+            else:
+                self._inflight_by_device[device_id] += 1
+                self._global_inflight += 1
+                if idempotency_key:
+                    self._idempotency_cache.reserve(
+                        device_id=device_id,
+                        session_key=session_key,
+                        idempotency_key=idempotency_key,
+                        run_id=run_id,
+                    )
+        if duplicate_entry is not None:
+            await self._send_duplicate_chat_response(ws, rid, duplicate_entry, device_id=device_id)
+            return
+        if rate_limited:
             audit_log(
                 "warning",
                 "rate_limited",
@@ -873,23 +1048,6 @@ class R1HermesAdapter:
             )
             await _send_error(ws, rid, "RATE_LIMITED", "too many messages")
             return
-
-        busy = False
-        busy_reason = ""
-        global_inflight = 0
-        device_inflight = 0
-        async with self._inflight_lock:
-            global_inflight = self._global_inflight
-            device_inflight = self._inflight_by_device[device_id]
-            if self._global_inflight >= self.config.global_concurrency:
-                busy = True
-                busy_reason = "global_concurrency"
-            elif self._inflight_by_device[device_id] >= self.config.per_device_concurrency:
-                busy = True
-                busy_reason = "per_device_concurrency"
-            else:
-                self._inflight_by_device[device_id] += 1
-                self._global_inflight += 1
         if busy:
             audit_log(
                 "warning",
@@ -905,11 +1063,10 @@ class R1HermesAdapter:
             await _send_error(ws, rid, "BUSY", "gateway is busy")
             return
 
-        run_id = str(chat_request.idempotency_key or rid or secrets.token_hex(8))
-        session_key = chat_request.session_key
         response = ""
         error: ChatRunError | None = None
         started_at = time.monotonic()
+        completed_event: dict[str, Any]
         try:
             await self._on_chat_session_active(ws, device_id=device_id, session_key=session_key)
             await ws.send_json(
@@ -944,6 +1101,15 @@ class R1HermesAdapter:
                 response = await self.message_handler(
                     message_text, device_id=device_id, session_key=session_key
                 )
+            except asyncio.CancelledError:
+                if idempotency_key:
+                    self._idempotency_cache.discard(
+                        device_id=device_id,
+                        session_key=session_key,
+                        idempotency_key=idempotency_key,
+                        run_id=run_id,
+                    )
+                raise
             except ChatRunError as exc:
                 error = exc
             except TimeoutError:
@@ -960,6 +1126,7 @@ class R1HermesAdapter:
                     self._global_inflight = 0
 
         if error is not None:
+            completed_event = _chat_error_event(run_id, session_key, error)
             audit_log(
                 "error",
                 "chat.run_error",
@@ -970,21 +1137,18 @@ class R1HermesAdapter:
                 safe_message=error.safe_message,
                 duration_ms=_elapsed_ms(started_at),
             )
-            await ws.send_json(
-                {
-                    "type": "event",
-                    "event": "chat",
-                    "payload": {
-                        "runId": run_id,
-                        "sessionKey": session_key,
-                        "seq": 2,
-                        "state": "error",
-                        "error": {"code": error.code, "message": error.safe_message},
-                    },
-                }
-            )
+            await ws.send_json(completed_event)
+            if idempotency_key:
+                self._idempotency_cache.complete(
+                    device_id=device_id,
+                    session_key=session_key,
+                    idempotency_key=idempotency_key,
+                    run_id=run_id,
+                    final_event=completed_event,
+                )
             return
 
+        completed_event = _chat_final_event(run_id, session_key, response)
         audit_log(
             "info",
             "chat.run_final",
@@ -994,23 +1158,56 @@ class R1HermesAdapter:
             response_chars=len(str(response or "")),
             duration_ms=_elapsed_ms(started_at),
         )
+        await ws.send_json(completed_event)
+        if idempotency_key:
+            self._idempotency_cache.complete(
+                device_id=device_id,
+                session_key=session_key,
+                idempotency_key=idempotency_key,
+                run_id=run_id,
+                final_event=completed_event,
+            )
+
+    async def _send_duplicate_chat_response(
+        self,
+        ws: web.WebSocketResponse,
+        rid: Any,
+        entry: IdempotencyCacheEntry,
+        *,
+        device_id: str,
+    ) -> None:
+        if entry.state == "inflight":
+            audit_log(
+                "info",
+                "chat.duplicate_inflight",
+                device_id_hash=hash_identifier(device_id),
+                session_key_hash=hash_identifier(entry.session_key),
+                run_id_hash=hash_identifier(entry.run_id),
+            )
+            await _send_error(ws, rid, "BUSY_DUPLICATE", "duplicate request is already running")
+            return
+
+        audit_log(
+            "info",
+            "chat.duplicate_replayed",
+            device_id_hash=hash_identifier(device_id),
+            session_key_hash=hash_identifier(entry.session_key),
+            run_id_hash=hash_identifier(entry.run_id),
+        )
         await ws.send_json(
             {
-                "type": "event",
-                "event": "chat",
+                "type": "res",
+                "id": rid,
+                "ok": True,
                 "payload": {
-                    "runId": run_id,
-                    "sessionKey": session_key,
-                    "seq": 2,
-                    "state": "final",
-                    "message": {
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": str(response or "")}],
-                        "timestamp": _now_ms(),
-                    },
+                    "runId": entry.run_id,
+                    "status": "completed",
+                    "duplicate": True,
                 },
             }
         )
+        if entry.final_event is not None:
+            await ws.send_json(copy.deepcopy(entry.final_event))
 
 
 def _hash_token(token: str, key: bytes) -> str:
@@ -1083,6 +1280,38 @@ def _now_ms() -> int:
 
 def _elapsed_ms(started_at: float) -> int:
     return max(0, int((time.monotonic() - started_at) * 1000))
+
+
+def _chat_final_event(run_id: str, session_key: str, response: str) -> dict[str, Any]:
+    return {
+        "type": "event",
+        "event": "chat",
+        "payload": {
+            "runId": run_id,
+            "sessionKey": session_key,
+            "seq": 2,
+            "state": "final",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": str(response or "")}],
+                "timestamp": _now_ms(),
+            },
+        },
+    }
+
+
+def _chat_error_event(run_id: str, session_key: str, error: ChatRunError) -> dict[str, Any]:
+    return {
+        "type": "event",
+        "event": "chat",
+        "payload": {
+            "runId": run_id,
+            "sessionKey": session_key,
+            "seq": 2,
+            "state": "error",
+            "error": {"code": error.code, "message": error.safe_message},
+        },
+    }
 
 
 def _timestamp_from_json(data: dict[str, Any], key: str, *, default: int) -> int:
