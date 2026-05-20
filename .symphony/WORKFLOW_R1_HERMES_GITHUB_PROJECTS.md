@@ -8,7 +8,7 @@ tracker:
   project_owner_type: user
   project_number: 2
   status_field: Status
-  active_states: ["Todo"]
+  active_states: ["Todo", "In Progress"]
   terminal_states: ["Done"]
 polling:
   interval_ms: 30000
