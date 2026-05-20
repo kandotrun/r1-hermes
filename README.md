@@ -88,6 +88,9 @@ r1-hermes probe \
 
 It prints only the assistant response; it does not print the issued device token.
 
+To verify the OpenClaw/Rabbit `gateway.connect` handshake variant, add
+`--connect-method gateway.connect` to the probe command.
+
 ## Revoke a paired device
 
 If a Rabbit R1 device token or pairing QR may have been exposed, revoke the paired device before
@@ -110,7 +113,8 @@ The demo handler echoes messages. Use `r1-hermes hermes` for a gateway that actu
 
 ## Runtime behavior
 
-- An R1 device must complete `connect` authentication before `chat.send` is accepted.
+- An R1 device must complete `connect` or the compatible `gateway.connect` authentication before
+  `chat.send` is accepted.
 - Each device/session key resumes a stable Hermes CLI session via `hermes chat --continue r1-hermes-...`.
 - Hermes stderr is not returned to R1 to avoid leaking secrets.
 - Failures are returned as short, generic messages and details stay in local logs.

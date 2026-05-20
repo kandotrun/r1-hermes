@@ -1,0 +1,16 @@
+{
+  "type": "req",
+  "id": "connect-official-helper-001",
+  "method": "connect",
+  "params": {
+    "auth": {
+      "token": "DUMMY_GATEWAY_TOKEN_DO_NOT_USE"
+    },
+    "device": {
+      "id": "r1-official-helper"
+    },
+    "client": {
+      "displayName": "Rabbit R1 official helper"
+    }
+  }
+}

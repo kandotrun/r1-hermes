@@ -1,0 +1,14 @@
+{
+  "type": "req",
+  "id": "gateway-connect-community-shim-001",
+  "method": "gateway.connect",
+  "payload": {
+    "gatewayToken": "DUMMY_GATEWAY_TOKEN_DO_NOT_USE",
+    "device": "r1-community-shim",
+    "clientName": "OpenClaw community shim",
+    "capabilities": ["connect.ok", "node.pair.approved"],
+    "unknownCaptureField": {
+      "ignored": true
+    }
+  }
+}

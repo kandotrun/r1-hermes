@@ -27,6 +27,8 @@ DEFAULT_PORT = 18789
 DEFAULT_HOST = "127.0.0.1"
 STATE_FILE = "devices.json"
 TOKEN_BYTES = 32
+CONNECT_METHODS = {"connect", "gateway.connect"}
+GATEWAY_CONNECT_ACK_EVENTS = ("connect.ok", "node.pair.approved")
 
 
 @dataclass(frozen=True)
@@ -253,7 +255,7 @@ class R1HermesAdapter:
                 await _send_error(ws, rid, "BAD_REQUEST", "method is required")
                 continue
 
-            if method == "connect":
+            if method in CONNECT_METHODS:
                 try:
                     connect_request = parse_connect_params(request_params(frame))
                 except PayloadParseError as exc:
@@ -272,6 +274,9 @@ class R1HermesAdapter:
                 device_id = device_id_or_error
                 authenticated = True
                 await ws.send_json(_hello_response(rid, device_token))
+                if method == "gateway.connect":
+                    for event in GATEWAY_CONNECT_ACK_EVENTS:
+                        await ws.send_json(_connect_ack_event(event, device_id=device_id))
                 continue
 
             if not authenticated:
@@ -449,5 +454,17 @@ def _hello_response(rid: Any, device_token: str) -> dict[str, Any]:
             "health": {"ok": True, "status": "ok"},
             "stateVersion": 1,
             "uptimeMs": 0,
+        },
+    }
+
+
+def _connect_ack_event(event: str, *, device_id: str) -> dict[str, Any]:
+    return {
+        "type": "event",
+        "event": event,
+        "payload": {
+            "ok": True,
+            "deviceId": device_id,
+            "ts": _now_ms(),
         },
     }

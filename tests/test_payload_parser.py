@@ -28,6 +28,36 @@ def test_connect_fixture_payload_aliases_are_normalized_without_repr_secret_leak
     assert "DUMMY_GATEWAY_TOKEN_DO_NOT_USE" not in repr(request)
 
 
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_device_id", "expected_display_name"),
+    [
+        (
+            "connect_official_helper.json",
+            "r1-official-helper",
+            "Rabbit R1 official helper",
+        ),
+        (
+            "gateway_connect_community_shim.json",
+            "r1-community-shim",
+            "OpenClaw community shim",
+        ),
+    ],
+)
+def test_connect_variant_fixtures_are_normalized_without_repr_secret_leakage(
+    fixture_name,
+    expected_device_id,
+    expected_display_name,
+):
+    frame = load_fixture(fixture_name)
+
+    request = parse_connect_params(request_params(frame))
+
+    assert request.auth_token == "DUMMY_GATEWAY_TOKEN_DO_NOT_USE"
+    assert request.device_id == expected_device_id
+    assert request.display_name == expected_display_name
+    assert "DUMMY_GATEWAY_TOKEN_DO_NOT_USE" not in repr(request)
+
+
 def test_chat_fixture_payload_aliases_are_normalized_and_ignores_device_token():
     frame = load_fixture("chat_send_payload_aliases.json")
 
