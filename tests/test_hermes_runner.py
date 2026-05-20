@@ -195,6 +195,63 @@ async def test_runner_times_out_cleanly():
     assert process.killed is True
 
 
+@pytest.mark.asyncio
+async def test_runner_kills_process_when_cancelled(caplog):
+    class HangingProcess:
+        returncode = None
+
+        def __init__(self):
+            self.killed = False
+            self.waited = False
+
+        async def communicate(self, _stdin=None):
+            await asyncio.sleep(60)
+            return b"late", b""
+
+        def kill(self):
+            self.killed = True
+
+        async def wait(self):
+            self.waited = True
+            return -9
+
+    process = HangingProcess()
+
+    async def fake_factory(*_argv, **_kwargs):
+        return process
+
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    runner = HermesCliRunner(process_factory=fake_factory, timeout_seconds=60)
+    task = asyncio.create_task(
+        runner(
+            "private prompt SECRET_TOKEN=abc",
+            device_id="r1-cancel-runner",
+            session_key="main",
+        )
+    )
+    await asyncio.sleep(0)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    event = next(
+        json.loads(record.message)
+        for record in caplog.records
+        if record.name == "r1_hermes.audit" and "hermes.subprocess_cancelled" in record.message
+    )
+
+    assert process.killed is True
+    assert process.waited is True
+    assert event["event"] == "hermes.subprocess_cancelled"
+    assert event["device_id_hash"].startswith("sha256:")
+    assert event["session_key_hash"].startswith("sha256:")
+    assert "SECRET_TOKEN" not in logs
+    assert "private prompt" not in logs
+    assert "r1-cancel-runner" not in logs
+
+
 def test_session_name_is_stable_and_shell_safe():
     first = build_session_name("rabbit:one/../../x", "main chat")
     second = build_session_name("rabbit:one/../../x", "main chat")

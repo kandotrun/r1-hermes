@@ -64,6 +64,19 @@ class HermesCliRunner:
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(), timeout=self.timeout_seconds
             )
+        except asyncio.CancelledError:
+            process.kill()
+            try:
+                await process.wait()
+            except Exception:  # pragma: no cover - best-effort cleanup
+                logger.exception("failed while waiting for cancelled Hermes process")
+            audit_log(
+                "info",
+                "hermes.subprocess_cancelled",
+                device_id_hash=hash_identifier(device_id),
+                session_key_hash=hash_identifier(session_key),
+            )
+            raise
         except (TimeoutError, asyncio.TimeoutError):
             process.kill()
             try:

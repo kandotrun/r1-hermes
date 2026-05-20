@@ -56,6 +56,19 @@ class BlockingHermesSink:
             await self._started.wait_for(lambda: len(self.messages) >= count)
 
 
+class CancellableBlockingHermesSink(BlockingHermesSink):
+    def __init__(self):
+        super().__init__()
+        self.cancelled = asyncio.Event()
+
+    async def __call__(self, text: str, *, device_id: str, session_key: str) -> str:
+        try:
+            return await super().__call__(text, device_id=device_id, session_key=session_key)
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+
+
 class FakeWebSocket:
     def __init__(self):
         self.frames = []
@@ -251,6 +264,15 @@ async def test_http_healthz_allows_non_local_requests_with_explicit_opt_in(tmp_p
 
 async def send_chat(ws, *, rid: str, message: str, session_key: str = "main") -> None:
     await ws.send_json(chat_frame(rid=rid, message=message, session_key=session_key))
+
+
+async def wait_until(predicate, *, timeout: float = 1.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    assert predicate()
 
 
 def chat_frame(*, rid: str, message: str, session_key: str = "main") -> dict:
@@ -1799,6 +1821,84 @@ async def test_global_inflight_counter_is_released_after_timeout_error(
         for session, ws in sessions:
             await ws.close()
             await session.close()
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_websocket_disconnect_cancels_active_chat_run_and_releases_inflight(
+    unused_tcp_port,
+    tmp_path,
+    caplog,
+):
+    sink = CancellableBlockingHermesSink()
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            max_message_chars=128,
+            per_device_concurrency=1,
+            global_concurrency=1,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    await adapter.start()
+    first_session = None
+    second_session = None
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        first_session, first_ws = await authenticated_ws(base_url, device_id="r1-disconnect")
+        await send_chat(
+            first_ws,
+            rid="chat-disconnect",
+            message="private disconnect prompt DUMMY_SECRET_TOKEN_DO_NOT_USE",
+        )
+        assert (await first_ws.receive_json())["ok"] is True
+        assert (await first_ws.receive_json())["payload"]["state"] == "started"
+        await sink.wait_for_calls(1)
+
+        await first_ws.close()
+        await first_session.close()
+        first_session = None
+
+        await asyncio.wait_for(sink.cancelled.wait(), timeout=1)
+        await wait_until(lambda: adapter._global_inflight == 0)
+        await wait_until(lambda: not adapter._inflight_by_device)
+
+        adapter.message_handler = FakeHermesSink()
+        second_session, second_ws = await authenticated_ws(
+            base_url,
+            device_id="r1-after-disconnect",
+        )
+        await send_chat(second_ws, rid="chat-after-disconnect", message="after disconnect")
+        assert (await second_ws.receive_json())["ok"] is True
+        assert (await second_ws.receive_json())["payload"]["state"] == "started"
+        final = await second_ws.receive_json()
+
+        logs = serialized_audit_logs(caplog)
+        cancel_event = next(
+            event for event in audit_events(caplog) if event["event"] == "chat.run_cancelled"
+        )
+
+        assert final["payload"]["state"] == "final"
+        assert final["payload"]["message"]["content"][0]["text"] == "echo: after disconnect"
+        assert cancel_event["reason"] == "websocket_disconnected"
+        assert cancel_event["run_id_hash"].startswith("sha256:")
+        assert "private disconnect prompt" not in logs
+        assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in logs
+        assert "gateway-token-for-tests" not in logs
+        assert "r1-disconnect" not in logs
+    finally:
+        sink.release.set()
+        if first_session is not None:
+            await first_session.close()
+        if second_session is not None:
+            await second_ws.close()
+            await second_session.close()
         await adapter.stop()
 
 
