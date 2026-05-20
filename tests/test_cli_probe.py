@@ -138,6 +138,49 @@ def test_probe_command_requires_token(monkeypatch):
         cli.main()
 
 
+def test_server_command_reads_unauthenticated_limit_env(monkeypatch, tmp_path):
+    created = []
+
+    class FakeAdapter:
+        def __init__(self, config, *, message_handler):
+            created.append({"config": config, "message_handler": message_handler})
+
+    async def fake_run_forever(adapter, *, ready_file=None):
+        created.append({"adapter": adapter, "ready_file": ready_file})
+
+    monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
+    monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_UNAUTHENTICATED_CONNECTION_LIMIT", "3")
+    monkeypatch.setenv("R1_HERMES_UNAUTHENTICATED_ATTEMPT_LIMIT", "4")
+    monkeypatch.setenv("R1_HERMES_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS", "5")
+    monkeypatch.setenv("R1_HERMES_UNAUTHENTICATED_COOLDOWN_SECONDS", "6")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "serve",
+            "--state-dir",
+            str(tmp_path),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "18789",
+        ],
+    )
+
+    cli.main()
+
+    config = created[0]["config"]
+    assert config.gateway_token == "gateway-secret"
+    assert config.host == "127.0.0.1"
+    assert config.port == 18789
+    assert config.unauthenticated_connection_limit == 3
+    assert config.unauthenticated_attempt_limit == 4
+    assert config.unauthenticated_attempt_window_seconds == 5
+    assert config.unauthenticated_cooldown_seconds == 6
+
+
 def test_qr_command_does_not_print_payload_without_explicit_flag(monkeypatch, capsys, tmp_path):
     dummy_gateway_token = "gateway-secret"
     written = []

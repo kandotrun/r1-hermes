@@ -54,6 +54,31 @@ async def running_adapter(unused_tcp_port, tmp_path):
         await adapter.stop()
 
 
+@pytest_asyncio.fixture
+async def unauth_limited_adapter(unused_tcp_port, tmp_path):
+    sink = FakeHermesSink()
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            max_message_chars=128,
+            unauthenticated_connection_limit=1,
+            unauthenticated_attempt_limit=2,
+            unauthenticated_attempt_window_seconds=60,
+            unauthenticated_cooldown_seconds=60,
+        ),
+        message_handler=sink,
+    )
+    await adapter.start()
+    try:
+        yield adapter, sink, f"http://127.0.0.1:{port}"
+    finally:
+        await adapter.stop()
+
+
 async def ws_connect(base_url: str):
     session = ClientSession()
     ws = await session.ws_connect(base_url.replace("http", "ws") + "/")
@@ -108,6 +133,116 @@ async def test_connect_requires_gateway_token(running_adapter):
         assert msg["error"]["code"] == "UNAUTHORIZED"
         close = await ws.receive()
         assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
+        assert sink.messages == []
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_wrong_token_retries_are_rate_limited_by_peer_before_auth(
+    unauth_limited_adapter,
+):
+    _adapter, sink, base_url = unauth_limited_adapter
+    for attempt in range(2):
+        session, ws = await ws_connect(base_url)
+        try:
+            bad_token = f"wrong-token-{attempt}"
+            await ws.send_json(
+                {
+                    "type": "req",
+                    "id": f"connect-{attempt}",
+                    "method": "connect",
+                    "params": {"auth": {"token": bad_token}, "device": {"id": "r1-test"}},
+                }
+            )
+            msg = await ws.receive_json()
+            serialized = json.dumps(msg)
+            assert msg["ok"] is False
+            assert msg["error"]["code"] == "UNAUTHORIZED"
+            assert bad_token not in serialized
+            close = await ws.receive()
+            assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
+        finally:
+            await session.close()
+
+    session = ClientSession()
+    try:
+        ws = await session.ws_connect(base_url.replace("http", "ws") + "/")
+        msg = await ws.receive()
+        assert msg.type == WSMsgType.TEXT
+        frame = json.loads(msg.data)
+        serialized = json.dumps(frame)
+        assert frame["ok"] is False
+        assert frame["error"]["code"] == "RATE_LIMITED"
+        assert "wrong-token" not in serialized
+        close = await ws.receive()
+        assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
+        assert ws.close_code == 1008
+        assert sink.messages == []
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_unauthenticated_connections_are_limited_by_peer(
+    unauth_limited_adapter,
+):
+    _adapter, sink, base_url = unauth_limited_adapter
+    first_session, first_ws = await ws_connect(base_url)
+    second_session = ClientSession()
+    try:
+        second_ws = await second_session.ws_connect(base_url.replace("http", "ws") + "/")
+        msg = await second_ws.receive()
+        assert msg.type == WSMsgType.TEXT
+        frame = json.loads(msg.data)
+        assert frame["ok"] is False
+        assert frame["error"]["code"] == "RATE_LIMITED"
+        close = await second_ws.receive()
+        assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
+        assert second_ws.close_code == 1008
+        assert sink.messages == []
+    finally:
+        await first_ws.close()
+        await first_session.close()
+        await second_session.close()
+
+
+@pytest.mark.asyncio
+async def test_repeated_malformed_unauthenticated_frames_are_rate_limited(
+    unauth_limited_adapter,
+):
+    _adapter, sink, base_url = unauth_limited_adapter
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_str("{not-json")
+        first = await ws.receive_json()
+        assert first["ok"] is False
+        assert first["error"]["code"] == "BAD_JSON"
+
+        await ws.send_str(json.dumps(["not", "an", "object"]))
+        second = await ws.receive_json()
+        assert second["ok"] is False
+        assert second["error"]["code"] == "BAD_REQUEST"
+
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-after-malformed",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-tests"},
+                    "device": {"id": "r1-after-malformed"},
+                },
+            }
+        )
+        limited = await ws.receive_json()
+        serialized = json.dumps(limited)
+        assert limited["ok"] is False
+        assert limited["error"]["code"] == "RATE_LIMITED"
+        assert "gateway-token-for-tests" not in serialized
+        close = await ws.receive()
+        assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
+        assert ws.close_code == 1008
         assert sink.messages == []
     finally:
         await session.close()

@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from .adapter import DeviceState, R1HermesAdapter, R1HermesConfig
@@ -100,9 +101,8 @@ def main() -> None:
         token = os.environ.get("R1_HERMES_GATEWAY_TOKEN", "")
         if not token:
             raise SystemExit("R1_HERMES_GATEWAY_TOKEN is required")
-        config = R1HermesConfig(
-            gateway_token=token,
-            state_dir=Path(args.state_dir),
+        config = replace(
+            R1HermesConfig.from_env(state_dir=Path(args.state_dir)),
             host=args.host,
             port=args.port,
         )

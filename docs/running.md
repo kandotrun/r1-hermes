@@ -47,6 +47,22 @@ Before scanning with the real device, probe the exact WebSocket flow from this m
 r1-hermes probe --url ws://100.x.y.z:18789/ --message 'Reply with OK from Hermes'
 ```
 
+The gateway rate-limits pre-authentication noise by peer IP. Defaults allow eight unauthenticated
+connections and eight malformed or failed handshake attempts per 60-second window, followed by a
+60-second cooldown. Tune these only through the environment, for example in a private service env
+file:
+
+```ini
+R1_HERMES_UNAUTHENTICATED_CONNECTION_LIMIT=8
+R1_HERMES_UNAUTHENTICATED_ATTEMPT_LIMIT=8
+R1_HERMES_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS=60
+R1_HERMES_UNAUTHENTICATED_COOLDOWN_SECONDS=60
+R1_HERMES_UNAUTHENTICATED_TIMEOUT_SECONDS=30
+```
+
+These limits protect the handshake path but are not a substitute for Tailscale, firewall rules,
+mTLS, or IP allowlisting.
+
 For compatibility debugging, `--dump-frames` prints sanitized WebSocket frames to stderr. Auth token
 fields and text/audio content fields are redacted before printing; still keep the output local until
 you have reviewed it.
