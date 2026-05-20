@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import secrets
+import socket
 import stat
 import time
 from collections import defaultdict, deque
@@ -35,6 +37,13 @@ DEFAULT_UNAUTHENTICATED_CONNECTION_LIMIT = 8
 DEFAULT_UNAUTHENTICATED_ATTEMPT_LIMIT = 8
 DEFAULT_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS = 60
 DEFAULT_UNAUTHENTICATED_COOLDOWN_SECONDS = 60
+PUBLIC_BIND_ERROR = (
+    "Refusing wildcard bind host {host!r}. Binding the bearer-token gateway to all network "
+    "interfaces can expose Rabbit R1 access to unintended clients. Use --host 127.0.0.1 with "
+    "Tailscale Serve, a reverse proxy with mTLS or IP allowlisting, or a specific Tailscale/LAN "
+    "IP. If this network boundary has been explicitly reviewed, set --allow-public-bind or "
+    "R1_HERMES_ALLOW_PUBLIC_BIND=1."
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +52,7 @@ class R1HermesConfig:
     state_dir: Path
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+    allow_public_bind: bool = False
     max_message_chars: int = 4_000
     per_device_concurrency: int = 1
     global_concurrency: int = DEFAULT_GLOBAL_CONCURRENCY
@@ -54,20 +64,50 @@ class R1HermesConfig:
     unauthenticated_attempt_window_seconds: int = DEFAULT_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS
     unauthenticated_cooldown_seconds: int = DEFAULT_UNAUTHENTICATED_COOLDOWN_SECONDS
 
+    def __post_init__(self) -> None:
+        if not self.allow_public_bind and _is_wildcard_public_bind(self.host):
+            raise ValueError(PUBLIC_BIND_ERROR.format(host=self.host))
+
     @classmethod
-    def from_env(cls, *, state_dir: Path) -> "R1HermesConfig":
+    def from_env(
+        cls,
+        *,
+        state_dir: Path,
+        host: str | None = None,
+        port: int | None = None,
+        allow_public_bind: bool | None = None,
+        per_device_concurrency: int | None = None,
+        global_concurrency: int | None = None,
+    ) -> "R1HermesConfig":
         token = os.environ.get("R1_HERMES_GATEWAY_TOKEN", "")
         if not token:
             raise ValueError("R1_HERMES_GATEWAY_TOKEN is required")
         return cls(
             gateway_token=token,
             state_dir=state_dir,
-            host=os.environ.get("R1_HERMES_HOST", DEFAULT_HOST),
-            port=int(os.environ.get("R1_HERMES_PORT", str(DEFAULT_PORT))),
+            host=host if host is not None else os.environ.get("R1_HERMES_HOST", DEFAULT_HOST),
+            port=(
+                port
+                if port is not None
+                else int(os.environ.get("R1_HERMES_PORT", str(DEFAULT_PORT)))
+            ),
+            allow_public_bind=(
+                _env_flag("R1_HERMES_ALLOW_PUBLIC_BIND")
+                if allow_public_bind is None
+                else allow_public_bind
+            ),
             max_message_chars=int(os.environ.get("R1_HERMES_MAX_MESSAGE_CHARS", "4000")),
-            per_device_concurrency=int(os.environ.get("R1_HERMES_PER_DEVICE_CONCURRENCY", "1")),
-            global_concurrency=int(
-                os.environ.get("R1_HERMES_GLOBAL_CONCURRENCY", str(DEFAULT_GLOBAL_CONCURRENCY))
+            per_device_concurrency=(
+                per_device_concurrency
+                if per_device_concurrency is not None
+                else int(os.environ.get("R1_HERMES_PER_DEVICE_CONCURRENCY", "1"))
+            ),
+            global_concurrency=(
+                global_concurrency
+                if global_concurrency is not None
+                else int(
+                    os.environ.get("R1_HERMES_GLOBAL_CONCURRENCY", str(DEFAULT_GLOBAL_CONCURRENCY))
+                )
             ),
             rate_limit_messages=int(os.environ.get("R1_HERMES_RATE_LIMIT_MESSAGES", "12")),
             rate_limit_window_seconds=int(
@@ -659,6 +699,38 @@ def _validate_config(config: R1HermesConfig) -> None:
         raise ValueError("rate_limit_window_seconds must be at least 1")
     if config.unauthenticated_timeout_seconds < 1:
         raise ValueError("unauthenticated_timeout_seconds must be at least 1")
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_wildcard_public_bind(host: str) -> bool:
+    value = host.strip()
+    if not value:
+        return True
+    try:
+        return _is_unspecified_bind_address(value)
+    except ValueError:
+        pass
+    try:
+        addresses = socket.getaddrinfo(
+            value,
+            None,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+            flags=socket.AI_NUMERICHOST,
+        )
+    except socket.gaierror:
+        return False
+    return any(_is_unspecified_bind_address(result[4][0]) for result in addresses)
+
+
+def _is_unspecified_bind_address(address: str) -> bool:
+    ip = ipaddress.ip_address(address)
+    if ip.is_unspecified:
+        return True
+    return bool(getattr(ip, "ipv4_mapped", None) and ip.ipv4_mapped.is_unspecified)
 
 
 def _now_ms() -> int:

@@ -16,7 +16,8 @@ For supported Python versions and disclosure routing, see [`../README.md`](../RE
 ## Non-negotiable rules
 
 1. No `chat.send` or Hermes handler call before successful `connect` authentication.
-2. Default bind is `127.0.0.1`; LAN/Tailscale exposure must be explicit.
+2. Default bind is `127.0.0.1`; LAN/Tailscale exposure must be explicit, and wildcard binds
+   require a separate public-bind acknowledgement.
 3. Never log or render full gateway tokens or device tokens.
 4. No unauthenticated admin UI.
 5. Device tokens are stored as SHA-256 hashes under a `0700` state directory and bound to the original `device.id`.
@@ -33,7 +34,10 @@ Prefer one of:
 - direct bind to a specific Tailscale IP such as `100.x.y.z` when the R1 reaches the host over a tailnet
 - LAN bind only on a trusted isolated network
 
-Do not expose raw `ws://0.0.0.0:18789` to the public Internet.
+Wildcard bind hosts such as `0.0.0.0`, `::`, and numeric aliases for all interfaces fail closed
+unless `--allow-public-bind` or `R1_HERMES_ALLOW_PUBLIC_BIND=1` is set. Do not use that opt-in for
+convenience. Use it only after reviewing the network boundary, firewall, and client path, and do
+not expose a raw `ws://0.0.0.0:18789` service to the public Internet.
 
 For persistent deployment, use the systemd user-service template in
 [`docs/systemd-user-service.md`](systemd-user-service.md). Keep `R1_HERMES_GATEWAY_TOKEN` in the

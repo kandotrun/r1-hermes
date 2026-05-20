@@ -54,6 +54,12 @@ devices, increase only the global cap to the number of concurrent Hermes subproc
 comfortably run; keep the per-device cap low unless one device is intentionally allowed to occupy
 several slots. Requests over either cap receive `BUSY` before Hermes is invoked.
 
+The gateway rejects wildcard bind hosts such as `0.0.0.0`, `::`, and numeric aliases for all
+interfaces unless you explicitly acknowledge the exposure with `--allow-public-bind` or
+`R1_HERMES_ALLOW_PUBLIC_BIND=1`. Treat that opt-in as an exception for a reviewed private network
+boundary only. Prefer `127.0.0.1` with Tailscale Serve, `127.0.0.1` behind a reverse proxy with
+mTLS or IP allowlisting, or a concrete Tailscale/LAN IP.
+
 `r1-hermes qr` writes an owner-only PNG and fails if `--output` already exists. Use `--overwrite`
 only after confirming the old PNG is no longer needed. The command intentionally does not print the
 secret payload JSON unless `--print-payload` is supplied.

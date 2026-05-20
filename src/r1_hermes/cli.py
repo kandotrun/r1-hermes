@@ -4,13 +4,16 @@ import argparse
 import asyncio
 import os
 import sys
-from dataclasses import replace
 from pathlib import Path
 
 from .adapter import DEFAULT_GLOBAL_CONCURRENCY, DeviceState, R1HermesAdapter, R1HermesConfig
 from .hermes_runner import HermesCliRunner
 from .qr import build_pairing_payload, write_qr_png
 from .r1_client import R1ProbeClient
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 async def _demo_handler(text: str, *, device_id: str, session_key: str) -> str:
@@ -39,6 +42,12 @@ def add_server_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=int(os.environ.get("R1_HERMES_PER_DEVICE_CONCURRENCY", "1")),
         help="Maximum authenticated chat runs allowed at once for one device",
+    )
+    parser.add_argument(
+        "--allow-public-bind",
+        action="store_true",
+        default=_env_flag("R1_HERMES_ALLOW_PUBLIC_BIND"),
+        help="Explicitly allow wildcard binds such as 0.0.0.0 or :: after reviewing exposure",
     )
 
 
@@ -116,10 +125,11 @@ def main() -> None:
         if not token:
             raise SystemExit("R1_HERMES_GATEWAY_TOKEN is required")
         try:
-            config = replace(
-                R1HermesConfig.from_env(state_dir=Path(args.state_dir)),
+            config = R1HermesConfig.from_env(
+                state_dir=Path(args.state_dir),
                 host=args.host,
                 port=args.port,
+                allow_public_bind=args.allow_public_bind,
                 per_device_concurrency=args.per_device_concurrency,
                 global_concurrency=args.global_concurrency,
             )
