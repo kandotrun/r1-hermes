@@ -2,10 +2,11 @@
 
 This template runs `r1-hermes hermes` as a systemd user service. Keep the service bound to the narrowest reachable address and keep bearer secrets in the environment file only.
 
-Do not expose the raw gateway on the public Internet. Prefer one of these patterns:
+Do not expose the raw cleartext gateway on the public Internet. Prefer one of these patterns:
 
 - `127.0.0.1` with Tailscale Serve or a reverse proxy that enforces access controls
 - a specific Tailscale host IP such as `100.x.y.z` when Rabbit R1 must connect directly over the tailnet
+- a reviewed public IP/hostname with native TLS enabled, advertised as `wss://`, when proxyless Rabbit R1 access is required
 
 Wildcard bind hosts such as `0.0.0.0` and `::` fail closed by default. Avoid them; they are not
 safe defaults for this bridge. If a reviewed private network boundary genuinely requires a wildcard
@@ -66,6 +67,37 @@ allowed to consume multiple slots.
 Leave `R1_HERMES_ALLOW_PUBLIC_BIND` unset for localhost and concrete IP binds. Setting it to `1`
 allows all-interface binds and should be treated as an explicit exposure acknowledgement, not
 routine configuration.
+
+For proxyless public operation, terminate TLS inside `r1-hermes` itself instead of advertising
+cleartext `ws://` on a public address. Use a certificate whose SAN covers the hostname or IP that
+Rabbit R1 will connect to, set the TLS paths in the env file, and generate pairing payloads with
+`--protocol wss`:
+
+```ini
+R1_HERMES_HOST=66.94.115.69
+R1_HERMES_PORT=18789
+R1_HERMES_ALLOW_PUBLIC_BIND=1
+R1_HERMES_TLS_CERT_FILE=/etc/letsencrypt/live/r1-hermes.example.com/fullchain.pem
+R1_HERMES_TLS_KEY_FILE=/etc/letsencrypt/live/r1-hermes.example.com/privkey.pem
+R1_HERMES_TOOLSETS=safe
+R1_HERMES_GLOBAL_CONCURRENCY=2
+R1_HERMES_PER_DEVICE_CONCURRENCY=1
+```
+
+```bash
+r1-hermes probe \
+  --url wss://r1-hermes.example.com:18789/ \
+  --message 'Reply with OK from Hermes'
+
+r1-hermes qr \
+  --host r1-hermes.example.com \
+  --port 18789 \
+  --protocol wss \
+  --output ~/.local/state/r1-hermes/pairing.png
+```
+
+The QR payload contains a bearer token. Do not print it, paste it into chats, or keep old PNGs after
+pairing; rotate the gateway token if the QR is exposed.
 
 For Tailscale Serve or a reverse proxy, keep the service env file on localhost:
 
