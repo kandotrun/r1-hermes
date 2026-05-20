@@ -13,6 +13,8 @@ CONNECT_METHODS = {"connect", "gateway.connect"}
 CONNECT_ACK_EVENTS = {"connect.ok", "node.pair.approved"}
 AUTH_SECRET_KEYS = {"token", "authToken", "gatewayToken", "deviceToken", "bearerToken"}
 CONTENT_SECRET_KEYS = {"message", "text", "body", "prompt", "input", "data"}
+DEVICE_SECRET_KEYS = {"deviceId", "device_id", "serial", "serialNumber"}
+DEVICE_CONTEXT_KEYS = {"device"}
 REDACTED = "[REDACTED]"
 PUBLIC_DUMMY_SECRET_PREFIXES = ("DUMMY_GATEWAY_TOKEN_", "DUMMY_DEVICE_TOKEN_")
 
@@ -181,16 +183,33 @@ class R1ProbeClient:
 
 
 def redact_frame_secrets(value: Any, *, secret_values: tuple[str, ...] = ()) -> Any:
+    return _redact_frame_secrets(value, secret_values=secret_values, parent_key="")
+
+
+def _redact_frame_secrets(
+    value: Any, *, secret_values: tuple[str, ...] = (), parent_key: str = ""
+) -> Any:
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}
         for key, child in value.items():
-            if key in AUTH_SECRET_KEYS or (key in CONTENT_SECRET_KEYS and isinstance(child, str)):
+            if (
+                key in AUTH_SECRET_KEYS
+                or key in DEVICE_SECRET_KEYS
+                or (key == "id" and parent_key in DEVICE_CONTEXT_KEYS)
+                or (key in DEVICE_CONTEXT_KEYS and isinstance(child, str))
+                or (key in CONTENT_SECRET_KEYS and isinstance(child, str))
+            ):
                 redacted[key] = REDACTED
             else:
-                redacted[key] = redact_frame_secrets(child, secret_values=secret_values)
+                redacted[key] = _redact_frame_secrets(
+                    child, secret_values=secret_values, parent_key=key
+                )
         return redacted
     if isinstance(value, list):
-        return [redact_frame_secrets(item, secret_values=secret_values) for item in value]
+        return [
+            _redact_frame_secrets(item, secret_values=secret_values, parent_key=parent_key)
+            for item in value
+        ]
     if isinstance(value, str):
         return _redact_text(value, secret_values=secret_values)
     return value

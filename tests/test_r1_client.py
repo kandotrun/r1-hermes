@@ -169,6 +169,7 @@ async def test_probe_client_safe_frame_dump_redacts_auth_tokens(unused_tcp_port)
     assert DUMMY_GATEWAY_TOKEN not in serialized
     assert DUMMY_DEVICE_TOKEN not in serialized
     assert ISSUED_DEVICE_TOKEN not in serialized
+    assert "r1-dump" not in serialized
     assert "hello dump" not in serialized
     assert "dump ok" not in serialized
     assert "[REDACTED]" in serialized
@@ -194,6 +195,7 @@ async def test_probe_client_safe_frame_dump_captures_failed_connect_without_secr
     assert "UNAUTHORIZED" in str(exc_info.value)
     assert DUMMY_GATEWAY_TOKEN not in str(exc_info.value)
     assert DUMMY_GATEWAY_TOKEN not in serialized
+    assert "r1-dump-failure" not in serialized
     assert "[REDACTED]" in serialized
 
 
@@ -249,6 +251,7 @@ def test_redact_frame_secrets_removes_known_values_from_nested_strings():
     redacted = redact_frame_secrets(
         {
             "payload": {"auth": {"deviceToken": DUMMY_DEVICE_TOKEN}},
+            "params": {"device": {"id": "r1-private-device"}},
             "message": {"content": [{"type": "text", "text": "private prompt"}]},
             "error": {"message": f"bad {DUMMY_GATEWAY_TOKEN} and {DUMMY_DEVICE_TOKEN}"},
         },
@@ -258,6 +261,7 @@ def test_redact_frame_secrets_removes_known_values_from_nested_strings():
     serialized = str(redacted)
     assert DUMMY_GATEWAY_TOKEN not in serialized
     assert DUMMY_DEVICE_TOKEN not in serialized
+    assert "r1-private-device" not in serialized
     assert "private prompt" not in serialized
     assert serialized.count("[REDACTED]") >= 2
 
