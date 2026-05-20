@@ -78,7 +78,10 @@ pairing flow, physical access model, and command/data access risk, then opts in 
 `--allow-high-impact-toolsets` or `R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1`. Keep `safe`, or
 `safe,web` when web access is intentionally needed, for normal R1 use.
 
-Use a Tailscale IP, firewall allowlist, or reverse proxy with mTLS or IP allowlisting when the Rabbit R1 must reach the gateway from another device. Do not use wildcard binds or expose the raw gateway directly to the public Internet.
+Use Tailscale Serve, a Tailscale IP, firewall allowlist, or reverse proxy with mTLS or IP
+allowlisting when the Rabbit R1 must reach the gateway from another device. Do not use wildcard
+binds or expose the raw gateway directly to the public Internet. Copy-paste deployment recipes for
+Tailscale Serve and reverse proxies are in [`docs/running.md`](docs/running.md).
 
 `R1_HERMES_GLOBAL_CONCURRENCY` defaults to `2`, and `R1_HERMES_PER_DEVICE_CONCURRENCY` defaults
 to `1`. A single-user Rabbit R1 deployment should usually keep those defaults. For a reviewed
@@ -105,17 +108,31 @@ The same values can be set with `R1_HERMES_DEVICE_TOKEN_MAX_AGE_SECONDS` and
 Expired device tokens cannot reconnect; the Rabbit R1 must scan a fresh QR generated from the
 current gateway token.
 
-## 3. Generate the Rabbit R1 QR payload
+## 3. Generate the Rabbit R1 QR PNG
 
-```bash
-r1-hermes payload --host 100.x.y.z --port 18789 --protocol ws
-```
-
-To write a QR PNG:
+For a direct private WebSocket path, such as a concrete Tailscale IP or trusted isolated LAN IP,
+write the QR PNG without printing the secret payload JSON:
 
 ```bash
 r1-hermes qr --host 100.x.y.z --port 18789 --protocol ws --output ./r1-hermes-secret.png
 ```
+
+For Tailscale Serve or a TLS-terminating reverse proxy on port 443, generate the QR for the public
+TLS hostname instead of the loopback backend:
+
+```bash
+r1-hermes qr \
+  --host r1-hermes-host.tailnet-name.ts.net \
+  --port 443 \
+  --protocol wss \
+  --output ./r1-hermes-secret.png
+```
+
+Use `ws://` in the QR only when Rabbit R1 connects directly to the raw `r1-hermes` listener over a
+reviewed private, non-TLS path. Use `wss://` when Tailscale Serve, Caddy, nginx, or another reverse
+proxy terminates TLS and forwards to `127.0.0.1:18789`. Do not mark a plain `ws://` backend as
+`wss://`; the QR protocol must match the URL Rabbit R1 actually dials, not the proxy's upstream URL.
+Do not advertise `127.0.0.1` in a real-device QR unless the client is running on the same host.
 
 The QR contains the bearer token. Treat the PNG as a secret and delete it after pairing. The
 command creates the PNG as an owner-readable file, refuses to overwrite an existing output path
