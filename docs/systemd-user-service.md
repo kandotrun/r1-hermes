@@ -55,6 +55,7 @@ For direct tailnet operation, use the host's Tailscale IP instead of a wildcard 
 ```ini
 R1_HERMES_HOST=100.x.y.z
 R1_HERMES_PORT=18789
+R1_HERMES_ALLOWED_DEVICE_IDS=r1-known-device-id
 R1_HERMES_GLOBAL_CONCURRENCY=2
 R1_HERMES_PER_DEVICE_CONCURRENCY=1
 ```
@@ -63,6 +64,12 @@ The concurrency defaults are sized for one personal Rabbit R1. In a multi-device
 `R1_HERMES_GLOBAL_CONCURRENCY` only to the number of simultaneous Hermes subprocesses the host can
 run comfortably. Keep `R1_HERMES_PER_DEVICE_CONCURRENCY=1` unless one trusted device is explicitly
 allowed to consume multiple slots.
+
+When the intended R1 ID is known, set `R1_HERMES_ALLOWED_DEVICE_IDS` in the env file before normal
+service operation. It accepts comma, space, or newline-separated IDs. If you must learn the ID from
+first pairing, leave the variable unset only on a private boundary, pair once, record the intended
+ID from local state, use sanitized audit logs only for correlation, then restart the service with
+the allowlist set.
 
 Leave `R1_HERMES_ALLOW_PUBLIC_BIND` unset for localhost and concrete IP binds. Setting it to `1`
 allows all-interface binds and should be treated as an explicit exposure acknowledgement, not

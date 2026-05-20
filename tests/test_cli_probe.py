@@ -188,6 +188,65 @@ def test_server_command_reads_unauthenticated_limit_env(monkeypatch, tmp_path):
     assert config.device_token_idle_timeout_seconds == 30
 
 
+def test_server_command_reads_allowed_device_ids_from_env(monkeypatch, tmp_path):
+    created = []
+
+    class FakeAdapter:
+        def __init__(self, config, *, message_handler):
+            created.append({"config": config, "message_handler": message_handler})
+
+    async def fake_run_forever(adapter, *, ready_file=None):
+        created.append({"adapter": adapter, "ready_file": ready_file})
+
+    monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
+    monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_ALLOWED_DEVICE_IDS", "r1-env-a, r1-env-b\nr1-env-c")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["r1-hermes", "serve", "--state-dir", str(tmp_path)],
+    )
+
+    cli.main()
+
+    config = created[0]["config"]
+    assert config.allowed_device_ids == frozenset({"r1-env-a", "r1-env-b", "r1-env-c"})
+
+
+def test_server_command_allows_repeatable_allowed_device_id_cli(monkeypatch, tmp_path):
+    created = []
+
+    class FakeAdapter:
+        def __init__(self, config, *, message_handler):
+            created.append({"config": config, "message_handler": message_handler})
+
+    async def fake_run_forever(adapter, *, ready_file=None):
+        created.append({"adapter": adapter, "ready_file": ready_file})
+
+    monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
+    monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_ALLOWED_DEVICE_IDS", "r1-env-ignored")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "hermes",
+            "--state-dir",
+            str(tmp_path),
+            "--allowed-device-id",
+            "r1-cli-a",
+            "--allowed-device-id",
+            "r1-cli-b",
+        ],
+    )
+
+    cli.main()
+
+    config = created[0]["config"]
+    assert config.allowed_device_ids == frozenset({"r1-cli-a", "r1-cli-b"})
+
+
 def test_server_command_reads_health_privacy_env(monkeypatch, tmp_path):
     created = []
 

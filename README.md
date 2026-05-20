@@ -70,6 +70,7 @@ Useful options:
 r1-hermes hermes \
   --host 100.x.y.z \
   --port 18789 \
+  --allowed-device-id r1-known-device-id \
   --toolsets safe,web \
   --global-concurrency 2 \
   --per-device-concurrency 1 \
@@ -87,6 +88,14 @@ Use Tailscale Serve, a Tailscale IP, firewall allowlist, or reverse proxy with m
 allowlisting when the Rabbit R1 must reach the gateway from another device. Do not use wildcard
 binds or expose the raw gateway directly to the public Internet. Copy-paste deployment recipes for
 Tailscale Serve and reverse proxies are in [`docs/running.md`](docs/running.md).
+
+If you know the expected Rabbit R1 `device.id`, lock the gateway to it with repeatable
+`--allowed-device-id` options or `R1_HERMES_ALLOWED_DEVICE_IDS`. With an allowlist configured,
+unlisted device IDs cannot complete gateway-token pairing and cannot reuse device tokens already
+present in `devices.json`; no new token is issued for a rejected ID. For first pairing when the ID
+is not yet known, run only on a private boundary, record the exact intended device ID locally from
+the state file after successful pairing, use hashed audit logs only for correlation, then restart
+with the allowlist.
 
 `R1_HERMES_GLOBAL_CONCURRENCY` defaults to `2`, and `R1_HERMES_PER_DEVICE_CONCURRENCY` defaults
 to `1`. A single-user Rabbit R1 deployment should usually keep those defaults. For a reviewed

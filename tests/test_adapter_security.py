@@ -1252,6 +1252,201 @@ async def test_device_token_is_bound_to_original_device_id(running_adapter):
 
 
 @pytest.mark.asyncio
+async def test_allowed_device_can_pair_and_reuse_device_token(unused_tcp_port, tmp_path):
+    sink = FakeHermesSink()
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            allowed_device_ids=("r1-allowed",),
+        ),
+        message_handler=sink,
+    )
+    await adapter.start()
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        session, ws = await ws_connect(base_url)
+        try:
+            await ws.send_json(
+                {
+                    "type": "req",
+                    "id": "connect-allowed-1",
+                    "method": "connect",
+                    "params": {
+                        "auth": {"token": "gateway-token-for-tests"},
+                        "device": {"id": "r1-allowed"},
+                    },
+                }
+            )
+            hello = await ws.receive_json()
+            assert hello["ok"] is True
+            device_token = hello["payload"]["auth"]["deviceToken"]
+            assert device_token
+        finally:
+            await ws.close()
+            await session.close()
+
+        session2, ws2 = await ws_connect(base_url)
+        try:
+            await ws2.send_json(
+                {
+                    "type": "req",
+                    "id": "connect-allowed-2",
+                    "method": "connect",
+                    "params": {
+                        "auth": {"token": device_token},
+                        "device": {"id": "r1-allowed"},
+                    },
+                }
+            )
+            hello2 = await ws2.receive_json()
+            assert hello2["ok"] is True
+            assert hello2["payload"]["auth"]["deviceToken"] == device_token
+        finally:
+            await ws2.close()
+            await session2.close()
+    finally:
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_no_allowed_device_policy_preserves_gateway_token_pairing(running_adapter):
+    adapter, _sink, base_url = running_adapter
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-no-allowlist",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-tests"},
+                    "device": {"id": "r1-compatible-unlisted"},
+                },
+            }
+        )
+        hello = await ws.receive_json()
+        assert hello["ok"] is True
+        assert hello["payload"]["auth"]["deviceToken"]
+        assert "r1-compatible-unlisted" in adapter.state.device_ids()
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_allowed_device_policy_blocks_unknown_pairing_before_token_issue(
+    unused_tcp_port,
+    tmp_path,
+    caplog,
+):
+    sink = FakeHermesSink()
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            allowed_device_ids=("r1-allowed",),
+        ),
+        message_handler=sink,
+    )
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    await adapter.start()
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        session, ws = await ws_connect(base_url)
+        try:
+            await ws.send_json(
+                {
+                    "type": "req",
+                    "id": "connect-blocked",
+                    "method": "connect",
+                    "params": {
+                        "auth": {"token": "gateway-token-for-tests"},
+                        "device": {"id": "r1-blocked\nDUMMY_SECRET_DEVICE_ID"},
+                    },
+                }
+            )
+            msg = await ws.receive_json()
+            serialized = json.dumps(msg)
+            assert msg["ok"] is False
+            assert msg["error"] == {"code": "UNAUTHORIZED", "message": "auth token mismatch"}
+            assert "gateway-token-for-tests" not in serialized
+            assert "r1-blocked" not in serialized
+            assert "DUMMY_SECRET_DEVICE_ID" not in serialized
+            close = await ws.receive()
+            assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
+        finally:
+            await session.close()
+
+        logs = serialized_audit_logs(caplog)
+        failure = next(event for event in audit_events(caplog) if event["event"] == "auth.failure")
+        assert failure["reason"] == "device_not_allowed"
+        assert failure["device_id_hash"].startswith("sha256:")
+        assert "r1-blocked" not in logs
+        assert "DUMMY_SECRET_DEVICE_ID" not in logs
+        assert "gateway-token-for-tests" not in logs
+        assert adapter.state.device_ids() == []
+        assert sink.messages == []
+    finally:
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_allowed_device_policy_blocks_existing_token_for_unlisted_device(
+    unused_tcp_port,
+    tmp_path,
+):
+    blocked_device_token = DeviceState(tmp_path).issue_device_token("r1-existing-blocked")
+    sink = FakeHermesSink()
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            allowed_device_ids=("r1-allowed",),
+        ),
+        message_handler=sink,
+    )
+    await adapter.start()
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        session, ws = await ws_connect(base_url)
+        try:
+            await ws.send_json(
+                {
+                    "type": "req",
+                    "id": "connect-blocked-token",
+                    "method": "connect",
+                    "params": {
+                        "auth": {"token": blocked_device_token},
+                        "device": {"id": "r1-existing-blocked"},
+                    },
+                }
+            )
+            msg = await ws.receive_json()
+            serialized = json.dumps(msg)
+            assert msg["ok"] is False
+            assert msg["error"]["code"] == "UNAUTHORIZED"
+            assert blocked_device_token not in serialized
+            assert "r1-existing-blocked" in adapter.state.device_ids()
+            close = await ws.receive()
+            assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
+            assert sink.messages == []
+        finally:
+            await session.close()
+    finally:
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
 async def test_revoked_device_token_cannot_reconnect_or_run_agent(running_adapter):
     adapter, sink, base_url = running_adapter
     session, ws = await ws_connect(base_url)

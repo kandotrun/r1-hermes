@@ -118,6 +118,16 @@ def add_server_args(parser: argparse.ArgumentParser) -> None:
         help="PEM private key for native TLS/WSS listener; requires --tls-cert-file",
     )
     parser.add_argument(
+        "--allowed-device-id",
+        action="append",
+        default=None,
+        dest="allowed_device_ids",
+        help=(
+            "Allow only this Rabbit R1 device.id to pair or reconnect; repeat for multiple "
+            "devices. Defaults to R1_HERMES_ALLOWED_DEVICE_IDS when omitted."
+        ),
+    )
+    parser.add_argument(
         "--idempotency-cache-max-entries",
         type=int,
         default=int(
@@ -341,6 +351,7 @@ def main() -> None:
                 health_diagnostics=args.health_diagnostics,
                 tls_cert_file=Path(args.tls_cert_file) if args.tls_cert_file else None,
                 tls_key_file=Path(args.tls_key_file) if args.tls_key_file else None,
+                allowed_device_ids=args.allowed_device_ids,
             )
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc

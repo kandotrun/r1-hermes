@@ -4,7 +4,7 @@ import asyncio
 import secrets
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from aiohttp import web
@@ -116,21 +116,25 @@ class R1NativeGatewayAdapter(R1HermesAdapter):
             platform_toolsets=platform_toolsets,
             allow_high_impact_toolsets=allow_high_impact_toolsets,
         )
-        self.allowed_device_ids = (
-            frozenset(_safe_component(device_id) for device_id in allowed_device_ids)
-            if allowed_device_ids is not None
-            else None
+        configured_allowed_device_ids = (
+            allowed_device_ids if allowed_device_ids is not None else config.allowed_device_ids
+        )
+        self.allowed_device_ids = _native_allowed_device_ids(configured_allowed_device_ids)
+        native_config = (
+            replace(config, allowed_device_ids=None)
+            if self.allowed_device_ids is not None
+            else config
         )
         self._active_sockets: dict[tuple[str, str], web.WebSocketResponse] = {}
         self._active_socket_lock = asyncio.Lock()
-        super().__init__(config, message_handler=self.bridge)
+        super().__init__(native_config, message_handler=self.bridge)
 
     def _authenticate_connect(
         self, supplied: str, *, device_id: str, display_name: str
     ) -> AuthResult:
-        safe_device_id = _safe_component(device_id)
-        if self.allowed_device_ids is not None and safe_device_id not in self.allowed_device_ids:
+        if self.allowed_device_ids is not None and device_id not in self.allowed_device_ids:
             return AuthResult(ok=False, failure_reason="device_not_allowed")
+        safe_device_id = _safe_component(device_id)
         return super()._authenticate_connect(
             supplied,
             device_id=safe_device_id,
@@ -227,6 +231,15 @@ def _safe_component(value: str) -> str:
     safe = "".join(ch if ch.isalnum() or ch in "_-" else "-" for ch in text)
     safe = safe.strip("-")[:120]
     return safe or "unknown"
+
+
+def _native_allowed_device_ids(allowed_device_ids: Iterable[str] | None) -> frozenset[str] | None:
+    if allowed_device_ids is None:
+        return None
+    device_ids = frozenset(
+        str(device_id).strip() for device_id in allowed_device_ids if str(device_id).strip()
+    )
+    return device_ids or None
 
 
 def _clean_text(value: Any) -> str | None:

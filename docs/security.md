@@ -156,10 +156,31 @@ reconnecting or re-pairing devices.
 
 1. Operator generates a high-entropy gateway token.
 2. Operator builds a Rabbit R1 QR payload containing host, port, protocol, and token.
-3. R1 connects and sends `connect` or the compatible `gateway.connect` variant with the gateway
+3. If the intended R1 `device.id` is known, the operator starts the gateway with
+   `--allowed-device-id <device-id>` or `R1_HERMES_ALLOWED_DEVICE_IDS`.
+4. R1 connects and sends `connect` or the compatible `gateway.connect` variant with the gateway
    token and `device.id`.
-4. Adapter issues a per-device token, stores only a keyed digest, and sends the token to the device.
-5. Future connects may use the device token only with the same `device.id`.
+5. If an allowlist is configured, the adapter rejects unlisted device IDs before checking bearer
+   tokens or issuing a new device token.
+6. Adapter issues a per-device token, stores only a keyed digest, and sends the token to the device.
+7. Future connects may use the device token only with the same allowed `device.id`.
+
+For first pairing when the device ID is not known, leave the allowlist unset only on a private
+boundary such as localhost through Tailscale Serve, a concrete Tailscale IP, or a reviewed mTLS/IP
+allowlisted proxy. Pair once, record the intended device ID from the local state file or correlate
+the sanitized `device_id_hash` in local audit logs, then restart with the allowlist. Do not keep an
+unrestricted pairing listener on a broad network boundary.
+
+`--allowed-device-id` is repeatable. `R1_HERMES_ALLOWED_DEVICE_IDS` accepts comma, space, or
+newline-separated IDs. The standalone bridge and native Gateway prototype both enforce the same
+policy before gateway-token pairing and before existing device-token reconnects. Rejected clients
+receive the same generic unauthorized response as other auth failures, and audit logs contain only
+hashed device IDs.
+
+If `devices.json` contains records for IDs that are not in the current allowlist, those records stay
+on disk for operator review but cannot authenticate while the allowlist excludes them. Use
+`r1-hermes revoke --device-id <device-id>` or `r1-hermes revoke --all` to remove stale records when
+the deployment's intended device set is known.
 
 ## Device-token storage
 
