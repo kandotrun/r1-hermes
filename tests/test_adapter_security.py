@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from aiohttp import ClientSession, WSMsgType
+from aiohttp import ClientSession, WSMsgType, web
 
 from r1_hermes import adapter as adapter_module
 from r1_hermes.adapter import DeviceState, R1HermesAdapter, R1HermesConfig
@@ -60,6 +60,22 @@ class FakeWebSocket:
 
     async def send_json(self, frame):
         self.frames.append(frame)
+
+
+class FakeHealthTransport:
+    def __init__(self, peername):
+        self.peername = peername
+
+    def get_extra_info(self, name):
+        if name == "peername":
+            return self.peername
+        return None
+
+
+class FakeHealthRequest:
+    def __init__(self, peername):
+        self.remote = None
+        self.transport = FakeHealthTransport(peername)
 
 
 @pytest_asyncio.fixture
@@ -145,6 +161,78 @@ async def authenticated_ws(base_url: str, *, device_id: str):
     )
     assert (await ws.receive_json())["ok"] is True
     return session, ws
+
+
+@pytest.mark.asyncio
+async def test_http_healthz_default_is_privacy_preserving(running_adapter):
+    adapter, _sink, base_url = running_adapter
+    adapter.state.issue_device_token("r1-health-default")
+
+    async with ClientSession() as session:
+        async with session.get(f"{base_url}/healthz") as response:
+            payload = await response.json()
+
+    assert response.status == 200
+    assert payload == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_http_healthz_includes_paired_count_only_with_diagnostic_opt_in(
+    unused_tcp_port,
+    tmp_path,
+):
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=unused_tcp_port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            health_diagnostics=True,
+        ),
+        message_handler=FakeHermesSink(),
+    )
+    adapter.state.issue_device_token("r1-health-diagnostic")
+    await adapter.start()
+    try:
+        async with ClientSession() as session:
+            async with session.get(f"http://127.0.0.1:{unused_tcp_port}/healthz") as response:
+                payload = await response.json()
+    finally:
+        await adapter.stop()
+
+    assert response.status == 200
+    assert payload == {"ok": True, "paired": 1}
+
+
+@pytest.mark.asyncio
+async def test_http_healthz_rejects_non_local_requests_by_default(tmp_path):
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+        ),
+        message_handler=FakeHermesSink(),
+    )
+
+    with pytest.raises(web.HTTPForbidden):
+        await adapter._healthz(FakeHealthRequest(("203.0.113.10", 51234)))
+
+
+@pytest.mark.asyncio
+async def test_http_healthz_allows_non_local_requests_with_explicit_opt_in(tmp_path):
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            allow_remote_health=True,
+        ),
+        message_handler=FakeHermesSink(),
+    )
+
+    response = await adapter._healthz(FakeHealthRequest(("203.0.113.10", 51234)))
+
+    assert response.status == 200
+    assert json.loads(response.text) == {"ok": True}
 
 
 async def send_chat(ws, *, rid: str, message: str, session_key: str = "main") -> None:

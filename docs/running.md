@@ -77,6 +77,20 @@ Before scanning with the real device, probe the exact WebSocket flow from this m
 r1-hermes probe --url ws://100.x.y.z:18789/ --message 'Reply with OK from Hermes'
 ```
 
+The HTTP `/healthz` endpoint is for readiness only. By default it is local-only and returns no
+paired-device state:
+
+```bash
+curl --fail --silent http://127.0.0.1:18789/healthz
+```
+
+```json
+{"ok": true}
+```
+
+Use `--allow-remote-health` only for a reviewed private monitoring path. Use
+`--health-diagnostics` only when local diagnostics need the paired-device count.
+
 The gateway rate-limits pre-authentication noise by peer IP. Defaults allow eight unauthenticated
 connections and eight malformed or failed handshake attempts per 60-second window, followed by a
 60-second cooldown. Tune these only through the environment, for example in a private service env

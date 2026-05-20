@@ -214,7 +214,9 @@ supports best-effort `send_text()` delivery to active WebSocket sessions. See
 For persistent operation, use the hardened user-service template in
 [`packaging/systemd/r1-hermes.service`](packaging/systemd/r1-hermes.service) with an env file at
 `~/.config/r1-hermes/r1-hermes.env`. The unit does not contain token literals and uses
-`--ready-file` for health checks.
+`--ready-file` for startup readiness. The HTTP `/healthz` endpoint is local-only by default and
+returns only `{"ok": true}`; paired-device counts are diagnostic data and require an explicit
+`--health-diagnostics` or `R1_HERMES_HEALTH_DIAGNOSTICS=1` opt-in.
 
 See [`docs/systemd-user-service.md`](docs/systemd-user-service.md) for install, enable, status,
 logs, rollback, localhost, and Tailscale examples.

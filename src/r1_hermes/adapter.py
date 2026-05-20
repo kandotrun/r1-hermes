@@ -71,6 +71,8 @@ class R1HermesConfig:
     unauthenticated_cooldown_seconds: int = DEFAULT_UNAUTHENTICATED_COOLDOWN_SECONDS
     device_token_max_age_seconds: int = DEFAULT_DEVICE_TOKEN_MAX_AGE_SECONDS
     device_token_idle_timeout_seconds: int = DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS
+    allow_remote_health: bool = False
+    health_diagnostics: bool = False
 
     def __post_init__(self) -> None:
         if not self.allow_public_bind and _is_wildcard_public_bind(self.host):
@@ -88,6 +90,8 @@ class R1HermesConfig:
         global_concurrency: int | None = None,
         device_token_max_age_seconds: int | None = None,
         device_token_idle_timeout_seconds: int | None = None,
+        allow_remote_health: bool | None = None,
+        health_diagnostics: bool | None = None,
     ) -> "R1HermesConfig":
         token = os.environ.get("R1_HERMES_GATEWAY_TOKEN", "")
         if not token:
@@ -165,6 +169,16 @@ class R1HermesConfig:
                     "R1_HERMES_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS",
                     str(DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS),
                 )
+            ),
+            allow_remote_health=(
+                _env_flag("R1_HERMES_ALLOW_REMOTE_HEALTH")
+                if allow_remote_health is None
+                else allow_remote_health
+            ),
+            health_diagnostics=(
+                _env_flag("R1_HERMES_HEALTH_DIAGNOSTICS")
+                if health_diagnostics is None
+                else health_diagnostics
             ),
         )
 
@@ -496,8 +510,13 @@ class R1HermesAdapter:
         self._runner = None
         self._app = None
 
-    async def _healthz(self, _request: web.Request) -> web.Response:
-        return web.json_response({"ok": True, "paired": len(self.state.devices)})
+    async def _healthz(self, request: web.Request) -> web.Response:
+        if not self.config.allow_remote_health and not _is_local_request(request):
+            raise web.HTTPForbidden(text="health check is local-only")
+        payload = {"ok": True}
+        if self.config.health_diagnostics:
+            payload["paired"] = len(self.state.devices)
+        return web.json_response(payload)
 
     async def _ws_handler(self, request: web.Request) -> web.StreamResponse:
         if request.headers.get("Upgrade", "").lower() != "websocket":
@@ -911,6 +930,14 @@ def _peer_key(request: web.Request) -> str:
     if isinstance(request.remote, str) and request.remote:
         return request.remote
     return "unknown-peer"
+
+
+def _is_local_request(request: web.Request) -> bool:
+    peer = _peer_key(request)
+    try:
+        return ipaddress.ip_address(peer).is_loopback
+    except ValueError:
+        return peer.lower() == "localhost"
 
 
 async def _send_error(ws: web.WebSocketResponse, rid: Any, code: str, message: str) -> None:

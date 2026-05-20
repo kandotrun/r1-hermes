@@ -67,6 +67,12 @@ Leave `R1_HERMES_ALLOW_PUBLIC_BIND` unset for localhost and concrete IP binds. S
 allows all-interface binds and should be treated as an explicit exposure acknowledgement, not
 routine configuration.
 
+Leave HTTP health checks local-only unless a reviewed supervisor must reach `/healthz` from another
+host. The default response is only `{"ok": true}` and does not include paired-device counts. If a
+private, access-controlled monitoring path genuinely needs remote health checks, set
+`R1_HERMES_ALLOW_REMOTE_HEALTH=1`. Add `R1_HERMES_HEALTH_DIAGNOSTICS=1` only when the paired count is
+needed for local diagnostics, not for broadly reachable probes.
+
 If `r1-hermes` is not installed at `~/.local/bin/r1-hermes`, override `ExecStart` with the exact absolute path and keep the command shell-free:
 
 ```bash
@@ -105,6 +111,20 @@ cat "${XDG_RUNTIME_DIR}/r1-hermes/ready"
 ```
 
 The service uses `--ready-file %t/r1-hermes/ready`; systemd removes the old file before each start, and `r1-hermes` writes it only after the gateway starts listening.
+
+For local HTTP readiness, `/healthz` is intentionally minimal:
+
+```bash
+curl --fail --silent http://127.0.0.1:18789/healthz
+```
+
+Expected output:
+
+```json
+{"ok": true}
+```
+
+Do not depend on `/healthz` for paired-device counts unless diagnostics were explicitly enabled.
 
 Run an end-to-end health check before scanning a QR code with Rabbit R1:
 
