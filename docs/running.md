@@ -93,6 +93,22 @@ R1_HERMES_UNAUTHENTICATED_TIMEOUT_SECONDS=30
 These limits protect the handshake path but are not a substitute for Tailscale, firewall rules,
 mTLS, or IP allowlisting.
 
+Device tokens expire after 90 days from pairing or 30 idle days by default:
+
+```ini
+R1_HERMES_DEVICE_TOKEN_MAX_AGE_SECONDS=7776000
+R1_HERMES_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS=2592000
+```
+
+When either limit is reached, Rabbit R1 must scan a fresh QR generated from the current gateway
+token. To prune stale records from `devices.json` while keeping valid devices paired, run:
+
+```bash
+r1-hermes cleanup
+```
+
+Use the same `--state-dir` and expiry values as the running gateway if you customized them.
+
 For compatibility debugging, `--dump-frames` prints sanitized WebSocket frames to stderr. Auth token
 fields and text/audio content fields are redacted before printing; still keep the output local until
 you have reviewed it.

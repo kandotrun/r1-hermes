@@ -1,5 +1,6 @@
 import pytest
 
+from r1_hermes import adapter as adapter_module
 from r1_hermes import cli
 
 WILDCARD_IPV4 = ".".join(("0", "0", "0", "0"))
@@ -157,6 +158,8 @@ def test_server_command_reads_unauthenticated_limit_env(monkeypatch, tmp_path):
     monkeypatch.setenv("R1_HERMES_UNAUTHENTICATED_ATTEMPT_LIMIT", "4")
     monkeypatch.setenv("R1_HERMES_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS", "5")
     monkeypatch.setenv("R1_HERMES_UNAUTHENTICATED_COOLDOWN_SECONDS", "6")
+    monkeypatch.setenv("R1_HERMES_DEVICE_TOKEN_MAX_AGE_SECONDS", "60")
+    monkeypatch.setenv("R1_HERMES_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS", "30")
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -181,6 +184,8 @@ def test_server_command_reads_unauthenticated_limit_env(monkeypatch, tmp_path):
     assert config.unauthenticated_attempt_limit == 4
     assert config.unauthenticated_attempt_window_seconds == 5
     assert config.unauthenticated_cooldown_seconds == 6
+    assert config.device_token_max_age_seconds == 60
+    assert config.device_token_idle_timeout_seconds == 30
 
 
 def test_server_command_rejects_wildcard_bind_without_explicit_opt_in(monkeypatch, tmp_path):
@@ -330,8 +335,12 @@ def test_qr_command_prints_payload_only_with_explicit_flag(monkeypatch, capsys, 
 
 
 def test_revoke_command_removes_device_from_state(monkeypatch, capsys, tmp_path):
+    now_ms = 1_000_000
+    monkeypatch.setattr(adapter_module, "_now_ms", lambda: now_ms)
     state = cli.DeviceState(tmp_path)
     state.issue_device_token("r1-test")
+
+    now_ms = 1_001_000
     monkeypatch.setattr(
         "sys.argv",
         ["r1-hermes", "revoke", "--state-dir", str(tmp_path), "--device-id", "r1-test"],
@@ -352,6 +361,52 @@ def test_revoke_command_fails_for_unknown_device(monkeypatch, tmp_path):
 
     with pytest.raises(SystemExit, match="device not found: missing"):
         cli.main()
+
+
+def test_cleanup_command_prunes_expired_devices_without_printing_tokens(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    now_ms = 1_000_000
+    monkeypatch.setattr(adapter_module, "_now_ms", lambda: now_ms)
+    state = cli.DeviceState(
+        tmp_path,
+        device_token_max_age_seconds=60,
+        device_token_idle_timeout_seconds=0,
+    )
+    old_token = state.issue_device_token("r1-old")
+
+    now_ms = 1_050_000
+    fresh_token = state.issue_device_token("r1-fresh")
+
+    now_ms = 1_061_000
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "cleanup",
+            "--state-dir",
+            str(tmp_path),
+            "--device-token-max-age-seconds",
+            "60",
+            "--device-token-idle-timeout-seconds",
+            "0",
+        ],
+    )
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "Pruned expired devices: 1" in out
+    assert old_token not in out
+    assert fresh_token not in out
+    remaining = cli.DeviceState(
+        tmp_path,
+        device_token_max_age_seconds=60,
+        device_token_idle_timeout_seconds=0,
+    ).devices
+    assert set(remaining) == {"r1-fresh"}
 
 
 def test_serve_command_passes_concurrency_options(monkeypatch, tmp_path):

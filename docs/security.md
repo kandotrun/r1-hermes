@@ -20,7 +20,7 @@ For supported Python versions and disclosure routing, see [`../README.md`](../RE
    require a separate public-bind acknowledgement.
 3. Never log or render full gateway tokens or device tokens.
 4. No unauthenticated admin UI.
-5. Device tokens are stored as keyed HMAC-SHA-256 digests under a `0700` state directory and bound to the original `device.id`.
+5. Device tokens are stored as keyed HMAC-SHA-256 digests under a `0700` state directory, bound to the original `device.id`, and expire by configured age and idle windows.
 6. Unauthenticated handshake limits are enforced by peer IP before authentication.
 7. Authenticated rate limit, length limit, global concurrency limit, and per-device concurrency limit are enforced before Hermes execution.
 8. QR payloads contain secrets and must be shared/retained accordingly.
@@ -93,6 +93,51 @@ an `hmac-sha256:v1` digest immediately after successful authentication. Invalid 
 not upgraded. If the local HMAC key file is deleted while `devices.json` remains, already keyed
 records cannot be verified with the newly generated key; revoke or remove the stale state and pair
 the device again with a fresh QR.
+
+## Device token lifetime
+
+Device tokens are intentionally not permanent. By default, a paired device token expires after 90
+days from issuance or after 30 days without a successful device-token reconnect, whichever happens
+first:
+
+```text
+R1_HERMES_DEVICE_TOKEN_MAX_AGE_SECONDS=7776000
+R1_HERMES_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS=2592000
+```
+
+Both settings can also be passed to `r1-hermes serve` or `r1-hermes hermes` as
+`--device-token-max-age-seconds` and `--device-token-idle-timeout-seconds`. A value of `0` disables
+that specific check; do this only for a documented local test or a reviewed deployment exception.
+
+When a token expires, the gateway rejects it with the same generic unauthorized response used for
+other token failures and does not call Hermes. The Rabbit R1 operator should generate a fresh
+gateway token, restart the gateway with it, create a new QR PNG, scan it on the device, then delete
+the QR PNG after pairing.
+
+Existing `devices.json` records created before these timestamp fields existed are accepted
+backward-compatibly. On first load, missing `created_at_ms` or `last_seen_at_ms` values are treated
+as the current local load time so old pairings are not invalidated immediately by a software update.
+After the first successful reconnect or cleanup rewrite, records are stored with explicit
+timestamps.
+
+Prune expired records from the local state file with:
+
+```bash
+r1-hermes cleanup
+```
+
+Use the same `--state-dir`, `--device-token-max-age-seconds`, and
+`--device-token-idle-timeout-seconds` values as the running gateway when they are not defaults:
+
+```bash
+r1-hermes cleanup \
+  --state-dir /path/to/state \
+  --device-token-max-age-seconds 7776000 \
+  --device-token-idle-timeout-seconds 2592000
+```
+
+Cleanup removes only expired device records and prints a count. It does not print token hashes,
+device tokens, gateway tokens, QR payloads, or raw authorization material.
 
 ## OpenClaw/Rabbit compatibility scope
 
@@ -168,6 +213,9 @@ Use the same `--state-dir` value as the running gateway when it is not the defau
 ```bash
 r1-hermes revoke --state-dir /path/to/state --device-id r1-device-id
 ```
+
+Expiration is not a replacement for revocation. If compromise is suspected, revoke immediately and
+rotate the gateway token instead of waiting for the age or idle timer.
 
 ## Incident response
 

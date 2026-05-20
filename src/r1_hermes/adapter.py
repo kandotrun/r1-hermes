@@ -48,6 +48,8 @@ PUBLIC_BIND_ERROR = (
     "IP. If this network boundary has been explicitly reviewed, set --allow-public-bind or "
     "R1_HERMES_ALLOW_PUBLIC_BIND=1."
 )
+DEFAULT_DEVICE_TOKEN_MAX_AGE_SECONDS = 90 * 24 * 60 * 60
+DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS = 30 * 24 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,8 @@ class R1HermesConfig:
     unauthenticated_attempt_limit: int = DEFAULT_UNAUTHENTICATED_ATTEMPT_LIMIT
     unauthenticated_attempt_window_seconds: int = DEFAULT_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS
     unauthenticated_cooldown_seconds: int = DEFAULT_UNAUTHENTICATED_COOLDOWN_SECONDS
+    device_token_max_age_seconds: int = DEFAULT_DEVICE_TOKEN_MAX_AGE_SECONDS
+    device_token_idle_timeout_seconds: int = DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
         if not self.allow_public_bind and _is_wildcard_public_bind(self.host):
@@ -82,6 +86,8 @@ class R1HermesConfig:
         allow_public_bind: bool | None = None,
         per_device_concurrency: int | None = None,
         global_concurrency: int | None = None,
+        device_token_max_age_seconds: int | None = None,
+        device_token_idle_timeout_seconds: int | None = None,
     ) -> "R1HermesConfig":
         token = os.environ.get("R1_HERMES_GATEWAY_TOKEN", "")
         if not token:
@@ -144,6 +150,22 @@ class R1HermesConfig:
                     str(DEFAULT_UNAUTHENTICATED_COOLDOWN_SECONDS),
                 )
             ),
+            device_token_max_age_seconds=int(
+                device_token_max_age_seconds
+                if device_token_max_age_seconds is not None
+                else os.environ.get(
+                    "R1_HERMES_DEVICE_TOKEN_MAX_AGE_SECONDS",
+                    str(DEFAULT_DEVICE_TOKEN_MAX_AGE_SECONDS),
+                )
+            ),
+            device_token_idle_timeout_seconds=int(
+                device_token_idle_timeout_seconds
+                if device_token_idle_timeout_seconds is not None
+                else os.environ.get(
+                    "R1_HERMES_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS",
+                    str(DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS),
+                )
+            ),
         )
 
 
@@ -165,21 +187,39 @@ class DeviceRecord:
         }
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "DeviceRecord":
+    def from_json(cls, data: dict[str, Any], *, missing_timestamp_ms: int = 0) -> "DeviceRecord":
+        created_at_ms = _timestamp_from_json(
+            data,
+            "created_at_ms",
+            default=missing_timestamp_ms,
+        )
+        last_seen_at_ms = _timestamp_from_json(
+            data,
+            "last_seen_at_ms",
+            default=created_at_ms,
+        )
         return cls(
             device_id=str(data["device_id"]),
             token_hash=str(data["token_hash"]),
             display_name=str(data.get("display_name") or "Rabbit R1"),
-            created_at_ms=int(data.get("created_at_ms") or 0),
-            last_seen_at_ms=int(data.get("last_seen_at_ms") or 0),
+            created_at_ms=created_at_ms,
+            last_seen_at_ms=last_seen_at_ms,
         )
 
 
 class DeviceState:
     """Device-token store that persists keyed digests and binds tokens to device IDs."""
 
-    def __init__(self, state_dir: Path):
+    def __init__(
+        self,
+        state_dir: Path,
+        *,
+        device_token_max_age_seconds: int = DEFAULT_DEVICE_TOKEN_MAX_AGE_SECONDS,
+        device_token_idle_timeout_seconds: int = DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS,
+    ):
         self.state_dir = state_dir
+        self.device_token_max_age_seconds = max(0, int(device_token_max_age_seconds))
+        self.device_token_idle_timeout_seconds = max(0, int(device_token_idle_timeout_seconds))
         self.state_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.state_dir, stat.S_IRWXU)
         self.path = self.state_dir / STATE_FILE
@@ -219,10 +259,22 @@ class DeviceState:
         if not self.path.exists():
             return
         data = json.loads(self.path.read_text())
-        self.devices = {
-            device_id: DeviceRecord.from_json(record)
-            for device_id, record in data.get("devices", {}).items()
-        }
+        loaded_at_ms = _now_ms()
+        migrated_timestamps = False
+        devices = {}
+        for device_id, record in data.get("devices", {}).items():
+            if not _has_valid_timestamp(record, "created_at_ms") or not _has_valid_timestamp(
+                record,
+                "last_seen_at_ms",
+            ):
+                migrated_timestamps = True
+            devices[device_id] = DeviceRecord.from_json(
+                record,
+                missing_timestamp_ms=loaded_at_ms,
+            )
+        self.devices = devices
+        if migrated_timestamps:
+            self.save()
 
     def save(self) -> None:
         payload = {"devices": {k: v.to_json() for k, v in sorted(self.devices.items())}}
@@ -249,24 +301,55 @@ class DeviceState:
         record = self.devices.get(device_id)
         if not record:
             return False
+        now = _now_ms()
         token_hash = _hash_token(token, self._digest_key)
         ok = hmac.compare_digest(record.token_hash, token_hash)
         needs_upgrade = False
         if not ok and _is_legacy_token_hash(record.token_hash):
             ok = hmac.compare_digest(record.token_hash, _legacy_hash_token(token))
             needs_upgrade = ok
-        if ok:
-            if needs_upgrade:
-                record.token_hash = token_hash
-            record.last_seen_at_ms = _now_ms()
-            self.save()
-        return ok
+        if not ok:
+            return False
+        if self.is_expired(record, now_ms=now):
+            return False
+        if needs_upgrade:
+            record.token_hash = token_hash
+        record.last_seen_at_ms = now
+        self.save()
+        return True
 
     def revoke(self, device_id: str) -> bool:
         existed = device_id in self.devices
         self.devices.pop(device_id, None)
         self.save()
         return existed
+
+    def prune_expired(self) -> int:
+        now = _now_ms()
+        expired = [
+            device_id
+            for device_id, record in self.devices.items()
+            if self.is_expired(record, now_ms=now)
+        ]
+        for device_id in expired:
+            self.devices.pop(device_id, None)
+        if expired:
+            self.save()
+        return len(expired)
+
+    def is_expired(self, record: DeviceRecord, *, now_ms: int | None = None) -> bool:
+        now_ms = _now_ms() if now_ms is None else now_ms
+        if _is_ttl_expired(
+            record.created_at_ms,
+            now_ms=now_ms,
+            ttl_seconds=self.device_token_max_age_seconds,
+        ):
+            return True
+        return _is_ttl_expired(
+            record.last_seen_at_ms,
+            now_ms=now_ms,
+            ttl_seconds=self.device_token_idle_timeout_seconds,
+        )
 
 
 class FixedWindowRateLimiter:
@@ -374,7 +457,11 @@ class R1HermesAdapter:
         self.config = config
         _validate_config(config)
         self.message_handler = message_handler
-        self.state = DeviceState(config.state_dir)
+        self.state = DeviceState(
+            config.state_dir,
+            device_token_max_age_seconds=config.device_token_max_age_seconds,
+            device_token_idle_timeout_seconds=config.device_token_idle_timeout_seconds,
+        )
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self._app: web.Application | None = None
@@ -788,6 +875,31 @@ def _is_unspecified_bind_address(address: str) -> bool:
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _timestamp_from_json(data: dict[str, Any], key: str, *, default: int) -> int:
+    if key not in data:
+        return default
+    try:
+        value = int(data[key])
+    except (TypeError, ValueError):
+        return default
+    return value or default
+
+
+def _has_valid_timestamp(data: dict[str, Any], key: str) -> bool:
+    if key not in data:
+        return False
+    try:
+        return int(data[key]) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_ttl_expired(timestamp_ms: int, *, now_ms: int, ttl_seconds: int) -> bool:
+    if ttl_seconds <= 0:
+        return False
+    return now_ms - timestamp_ms > ttl_seconds * 1000
 
 
 def _peer_key(request: web.Request) -> str:
