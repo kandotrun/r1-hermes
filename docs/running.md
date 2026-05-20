@@ -80,3 +80,93 @@ r1-hermes hermes --toolsets safe,web
 ```
 
 Do not enable high-impact toolsets such as `terminal`, `file`, or smart-home controls until the network boundary, pairing flow, and physical access model are reviewed.
+
+## Current bridge limits
+
+The `r1-hermes hermes` command is the supported runtime today. It is a security-first standalone
+bridge: Rabbit R1/OpenClaw connects over WebSocket, completes `connect` authentication, sends
+`chat.send`, and `r1-hermes` starts `hermes chat --quiet --query ...` with
+`asyncio.create_subprocess_exec`. It does not use a shell, does not pass gateway/device tokens on
+the command line, and does not return Hermes stderr to the device.
+
+What works now:
+
+- Rabbit/OpenClaw-style pairing with a bearer gateway token and per-device token.
+- Authenticated text `chat.send` requests after `connect`.
+- Stable Hermes CLI continuation sessions per R1 `device.id` and `sessionKey`.
+- Local `safe` toolset by default, with explicit `--toolsets` expansion.
+- Generic started/final/error chat events back to the active WebSocket.
+
+What does not work in the standalone bridge:
+
+- In-process Hermes Gateway `_message_handler` routing.
+- Gateway-owned platform registry/config loading for Rabbit R1.
+- Gateway platform toolset resolution beyond the CLI `--toolsets` argument.
+- Gateway send/proactive delivery queues for offline or never-activated sessions.
+- Native media, attachment, STT, and TTS mapping.
+- Full Hermes Gateway session, channel, and user semantics.
+
+## Native Hermes Gateway path
+
+A native Rabbit R1 platform should reuse the authenticated R1 WebSocket boundary from this repo but
+hand authenticated text to Hermes Gateway as a `MessageEvent`, then let Gateway process it through
+its normal `_message_handler`. There are three viable integration paths.
+
+Standalone bridge + `hermes chat`:
+
+- Benefits: works today, keeps an isolated process boundary, has simple deployment, and requires no
+  Hermes repo changes.
+- Costs and risks: it is not a native Gateway platform; toolsets are CLI-only; Gateway send queue,
+  media, and session semantics are unavailable.
+- Recommended use: default operator runtime until native Gateway APIs are stable.
+
+Hermes repo `gateway/platforms/r1_shim.py`:
+
+- Benefits: direct access to `MessageEvent`, `_message_handler`, `send()`, Gateway config, and
+  platform toolsets.
+- Costs and risks: requires Hermes repo changes and release coordination; platform/session naming
+  becomes part of Gateway state.
+- Recommended use: first upstream proof once Hermes maintainers accept an R1 platform.
+
+Plugin platform package:
+
+- Benefits: lets R1 support ship outside Hermes core while using Gateway plugin loading.
+- Costs and risks: depends on stable Hermes plugin hooks and version compatibility; packaging must
+  preserve secret handling.
+- Recommended use: long-term distribution if Hermes supports external platform plugins.
+
+The prototype in `src/r1_hermes/native_gateway.py` covers the local side of that design without
+taking a runtime dependency on the Hermes repository. `R1NativeGatewayAdapter` keeps the same
+localhost/private-network defaults, token authentication, device-token hashing, rate limits, message
+length limits, and generic error events as the standalone adapter. Its `R1GatewayMessageBridge`
+converts `chat.send` into a dependency-free `R1GatewayMessageEvent` with these stable fields:
+
+- `platform`: `rabbit_r1`
+- `user_id` and `channel_id`: sanitized R1 `device.id`
+- `session_id`: `r1:<device_id>:<session_key>`
+- `source`: `rabbit_r1:<device_id>:<session_key>`
+- `text`: the authenticated message text, excluded from `repr()`
+- `metadata`: sanitized `device_id`, `session_key`, and configured platform toolsets
+
+The prototype `send_text()` method sends a final chat event only when an authenticated WebSocket has
+activated the exact `device_id`/`session_key` by sending a `chat.send` in the current process. It
+returns `False` instead of queuing or persisting when the socket is absent or closed. That behavior
+keeps proactive delivery fail-closed until a Hermes-native adapter can define durable delivery and
+offline semantics.
+
+If this moves into Hermes core, the Gateway adapter should map the prototype fields to Hermes'
+actual `MessageEvent` class, call the standard Gateway `_message_handler`, implement `send()` using
+the active WebSocket map, and load R1 platform toolsets from Gateway config rather than CLI flags.
+The allowed user policy should default to the authenticated `device.id`, with an explicit allowlist
+for known device IDs when the deployment needs one. Do not accept any `chat.send` before `connect`,
+and do not broaden the default bind address or log bearer material during migration.
+
+## Migration notes
+
+No persistent DB migration is needed for the current `r1-hermes` standalone bridge or the local
+native prototype; both continue to use the existing hashed `devices.json` state file. The prototype
+uses platform name `rabbit_r1` and session ID `r1:<device_id>:<session_key>`. Moving an existing CLI
+deployment to a future Hermes-native platform can change the Hermes conversation/session identity
+because the standalone bridge currently uses `hermes chat --continue r1-hermes-...`. Treat that as a
+conversation-continuity break unless the Hermes-side migration explicitly aliases the old
+`r1-hermes-*` CLI continuation names to the new Gateway session IDs.

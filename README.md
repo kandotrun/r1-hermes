@@ -12,7 +12,10 @@ This repository is intentionally security-first. It implements the Rabbit R1/Ope
 - rate limits, message length limits, and per-device concurrency limits
 - explicit install docs and security checklist
 
-Status: runnable MVP. Do not expose directly to the public Internet.
+Status: runnable MVP. The default runtime is a standalone bridge that accepts Rabbit R1/OpenClaw
+WebSocket frames and invokes `hermes chat` for authenticated messages. A native Hermes Gateway
+adapter path is prototyped in-library but is not wired into a released Hermes Gateway plugin yet.
+Do not expose either mode directly to the public Internet.
 
 ## Agent handoff
 
@@ -125,6 +128,20 @@ The demo handler echoes messages. Use `r1-hermes hermes` for a gateway that actu
 - Each device/session key resumes a stable Hermes CLI session via `hermes chat --continue r1-hermes-...`.
 - Hermes stderr is not returned to R1 to avoid leaking secrets.
 - Failures are returned as short, generic messages and details stay in local logs.
+
+## Hermes Gateway status
+
+The `r1-hermes hermes` command is intentionally a subprocess bridge, not a native Hermes Gateway
+platform adapter. It can pair an R1, authenticate `chat.send`, preserve a stable CLI session name,
+and return final text replies. It does not currently participate in the same in-process gateway
+message pipeline as Slack/Telegram adapters, so gateway-managed platform toolset resolution,
+proactive delivery queues, media/STT/TTS handling, rich attachment mapping, and detailed gateway
+session semantics remain out of scope for the default command.
+
+For native Gateway work, `src/r1_hermes/native_gateway.py` contains a prototype adapter that
+converts authenticated R1 `chat.send` requests into a small `MessageEvent`-compatible shape and
+supports best-effort `send_text()` delivery to active WebSocket sessions. See
+[`docs/running.md`](docs/running.md) for the integration options and migration notes.
 
 ## systemd user service
 
