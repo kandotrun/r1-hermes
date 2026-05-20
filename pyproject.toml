@@ -12,12 +12,38 @@ license = "MIT"
 authors = [{name = "Kan Ninomiya"}]
 dependencies = ["aiohttp>=3.9"]
 
+[project.urls]
+Homepage = "https://github.com/kandotrun/r1-hermes"
+Repository = "https://github.com/kandotrun/r1-hermes"
+Issues = "https://github.com/kandotrun/r1-hermes/issues"
+Security = "https://github.com/kandotrun/r1-hermes/security"
+
 [project.scripts]
 r1-hermes = "r1_hermes.cli:main"
 
 [project.optional-dependencies]
 dev = ["build>=1.2", "pip-audit>=2.7", "pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6"]
 qr = ["qrcode[pil]>=7.4"]
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+r1_hermes = []
+
+[tool.setuptools.exclude-package-data]
+"*" = [
+  ".env",
+  ".env.*",
+  "*.log",
+  "*.ready",
+  "r1-hermes-secret*.png",
+  "devices.json",
+  "device-token-hmac.key",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
