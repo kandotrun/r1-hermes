@@ -2,6 +2,9 @@
 
 `r1-hermes` treats Rabbit R1 as an untrusted network client until a full `connect` request succeeds.
 
+For supported Python versions and disclosure routing, see [`../README.md`](../README.md) and
+[`../SECURITY.md`](../SECURITY.md).
+
 ## Boundaries
 
 - The WebSocket endpoint is the outer trust boundary.
@@ -96,3 +99,15 @@ bearer-secret incident.
 Do not widen the bind address, publish raw `ws://` service ports to the public Internet, or enable
 high-impact Hermes toolsets as part of incident recovery. Restore service only after the network
 boundary and fresh pairing flow are understood.
+
+## Responsible disclosure
+
+Report suspected vulnerabilities privately. Prefer GitHub private vulnerability reporting or a
+draft GitHub Security Advisory when available. If neither is available to you, open a minimal
+GitHub issue requesting a private maintainer contact and do not include exploit steps, gateway
+tokens, device tokens, QR payload contents, API keys, raw authorization headers, logs containing
+secrets, or real Rabbit R1 captures.
+
+Public issues are appropriate for general hardening ideas that do not disclose an active exploit,
+secret, or bypass. Authentication bypasses, token disclosure, unsafe public exposure, shell
+injection, and command execution boundary failures are treated as release blockers.

@@ -16,6 +16,9 @@ Status: runnable MVP. Do not expose directly to the public Internet.
 
 ## Install
 
+Supported Python versions: Python 3.10 and newer. CI currently exercises Python 3.10,
+3.11, and 3.12.
+
 ```bash
 git clone https://github.com/kandotrun/r1-hermes.git
 cd r1-hermes
@@ -128,3 +131,9 @@ logs, rollback, localhost, and Tailscale examples.
 ## Security
 
 Read [`docs/security.md`](docs/security.md) before exposing the gateway to a network.
+
+Report suspected vulnerabilities privately. Use GitHub's private vulnerability reporting or
+a draft GitHub Security Advisory when available; otherwise open a minimal issue asking for a
+private maintainer contact without including exploit details, gateway tokens, device tokens,
+QR payloads, API keys, or raw authorization headers. Public issues are fine for hardening
+requests that do not disclose an active exploit or secret.
