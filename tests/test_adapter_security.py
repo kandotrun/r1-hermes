@@ -10,6 +10,7 @@ from aiohttp import ClientSession, WSMsgType
 from r1_hermes.adapter import R1HermesAdapter, R1HermesConfig
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "r1_payloads"
+WILDCARD_IPV4 = ".".join(("0", "0", "0", "0"))
 
 
 class FakeHermesSink:
@@ -159,6 +160,43 @@ def chat_frame(*, rid: str, message: str, session_key: str = "main") -> dict:
             "idempotencyKey": f"run-{rid}",
         },
     }
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["127.0.0.1", "::1", "localhost", "100.64.0.1", "192.168.1.20", "203.0.113.10"],
+)
+def test_config_allows_loopback_and_concrete_bind_hosts(tmp_path, host):
+    config = R1HermesConfig(
+        gateway_token="gateway-token-for-tests",
+        state_dir=tmp_path,
+        host=host,
+    )
+
+    assert config.host == host
+
+
+@pytest.mark.parametrize("host", [WILDCARD_IPV4, "::", "::0", "0", "::ffff:0.0.0.0", ""])
+def test_config_rejects_wildcard_bind_hosts_without_explicit_opt_in(tmp_path, host):
+    with pytest.raises(ValueError, match="Refusing wildcard bind host"):
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            host=host,
+        )
+
+
+@pytest.mark.parametrize("host", [WILDCARD_IPV4, "::"])
+def test_config_allows_wildcard_bind_hosts_with_explicit_opt_in(tmp_path, host):
+    config = R1HermesConfig(
+        gateway_token="gateway-token-for-tests",
+        state_dir=tmp_path,
+        host=host,
+        allow_public_bind=True,
+    )
+
+    assert config.host == host
+    assert config.allow_public_bind is True
 
 
 @pytest.mark.asyncio

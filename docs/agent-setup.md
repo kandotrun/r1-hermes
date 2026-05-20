@@ -25,7 +25,9 @@ The expected flow is:
 - Only report short status messages and the QR file path/attachment.
 - Default to `--host 127.0.0.1` for local tests.
 - For real device pairing, use the narrowest reachable address. Tailscale IP is preferred.
-- Avoid `--host 0.0.0.0`. If you think it is required, stop and ask the human to approve the network boundary.
+- Avoid `--host 0.0.0.0` and `--host ::`. These wildcard binds fail closed unless
+  `--allow-public-bind` or `R1_HERMES_ALLOW_PUBLIC_BIND=1` is set. If you think that opt-in is
+  required, stop and ask the human to approve the network boundary.
 - Default to `--toolsets safe`.
 - Do not enable `terminal`, `file`, browser automation, home automation, vehicle controls, or other high-impact toolsets for R1 unless explicitly approved.
 
@@ -139,6 +141,11 @@ command -v tailscale >/dev/null && tailscale ip -4 || true
 ```
 
 Pick the narrowest address that Rabbit R1 can reach. Use examples below with `<REACHABLE_HOST>` replaced by that address.
+
+Do not substitute `0.0.0.0` or `::` for `<REACHABLE_HOST>`. The gateway rejects wildcard binds
+without an explicit public-bind acknowledgement, and QR payloads must advertise a concrete address
+that Rabbit R1 can actually reach. Prefer localhost plus Tailscale Serve, a reverse proxy with mTLS,
+or a specific Tailscale/LAN IP.
 
 ## 7. Start the real gateway
 

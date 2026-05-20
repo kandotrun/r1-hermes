@@ -2,6 +2,8 @@ import pytest
 
 from r1_hermes import cli
 
+WILDCARD_IPV4 = ".".join(("0", "0", "0", "0"))
+
 
 class FakeProbeClient:
     calls = []
@@ -179,6 +181,85 @@ def test_server_command_reads_unauthenticated_limit_env(monkeypatch, tmp_path):
     assert config.unauthenticated_attempt_limit == 4
     assert config.unauthenticated_attempt_window_seconds == 5
     assert config.unauthenticated_cooldown_seconds == 6
+
+
+def test_server_command_rejects_wildcard_bind_without_explicit_opt_in(monkeypatch, tmp_path):
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "serve",
+            "--state-dir",
+            str(tmp_path),
+            "--host",
+            WILDCARD_IPV4,
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    error = str(exc_info.value)
+    assert "Refusing wildcard bind host" in error
+    assert "--allow-public-bind" in error
+    assert "Tailscale" in error
+    assert "reverse proxy with mTLS" in error
+    assert "127.0.0.1" in error
+
+
+def test_server_command_allows_wildcard_bind_with_explicit_flag(monkeypatch, tmp_path):
+    captured = []
+
+    async def fake_run_forever(adapter, *, ready_file=None):
+        captured.append({"config": adapter.config, "ready_file": ready_file})
+
+    monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "serve",
+            "--state-dir",
+            str(tmp_path),
+            "--host",
+            WILDCARD_IPV4,
+            "--allow-public-bind",
+        ],
+    )
+
+    cli.main()
+
+    assert captured[0]["config"].host == WILDCARD_IPV4
+    assert captured[0]["config"].allow_public_bind is True
+
+
+def test_server_command_allows_wildcard_bind_with_env_opt_in(monkeypatch, tmp_path):
+    captured = []
+
+    async def fake_run_forever(adapter, *, ready_file=None):
+        captured.append(adapter.config)
+
+    monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_ALLOW_PUBLIC_BIND", "1")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "serve",
+            "--state-dir",
+            str(tmp_path),
+            "--host",
+            "::",
+        ],
+    )
+
+    cli.main()
+
+    assert captured[0].host == "::"
+    assert captured[0].allow_public_bind is True
 
 
 def test_qr_command_does_not_print_payload_without_explicit_flag(monkeypatch, capsys, tmp_path):

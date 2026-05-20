@@ -23,6 +23,7 @@ def test_env_example_keeps_localhost_default_and_token_placeholder() -> None:
 
     assert "R1_HERMES_HOST=127.0.0.1" in env_text
     assert "R1_HERMES_GATEWAY_TOKEN=replace-with-generated-token" in env_text
+    assert "R1_HERMES_ALLOW_PUBLIC_BIND=1" in env_text
     assert WILDCARD_HOST not in env_text
 
 

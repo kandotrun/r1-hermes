@@ -78,6 +78,11 @@ multi-device deployment, raise the global cap only to the number of simultaneous
 the host can absorb, and keep the per-device cap low so one device cannot monopolize the gateway.
 Requests over either cap receive a generic `BUSY` response before Hermes is invoked.
 
+Wildcard bind hosts such as `0.0.0.0`, `::`, and numeric aliases for all interfaces fail closed by default.
+If you have explicitly reviewed the network boundary and still need a wildcard bind, opt in with
+`--allow-public-bind` or `R1_HERMES_ALLOW_PUBLIC_BIND=1`; otherwise prefer `127.0.0.1` plus
+Tailscale Serve, a reverse proxy with mTLS, or a specific Tailscale/LAN IP.
+
 ## 3. Generate the Rabbit R1 QR payload
 
 ```bash

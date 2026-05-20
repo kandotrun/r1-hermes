@@ -7,7 +7,11 @@ Do not expose the raw gateway on the public Internet. Prefer one of these patter
 - `127.0.0.1` with Tailscale Serve or a reverse proxy that enforces access controls
 - a specific Tailscale host IP such as `100.x.y.z` when Rabbit R1 must connect directly over the tailnet
 
-Avoid `0.0.0.0`; it is not a safe default for this bridge.
+Wildcard bind hosts such as `0.0.0.0` and `::` fail closed by default. Avoid them; they are not
+safe defaults for this bridge. If a reviewed private network boundary genuinely requires a wildcard
+bind, add `--allow-public-bind` in an `ExecStart` override or set
+`R1_HERMES_ALLOW_PUBLIC_BIND=1` in the env file after documenting why a concrete Tailscale/LAN IP
+cannot be used.
 
 ## Install
 
@@ -58,6 +62,10 @@ The concurrency defaults are sized for one personal Rabbit R1. In a multi-device
 `R1_HERMES_GLOBAL_CONCURRENCY` only to the number of simultaneous Hermes subprocesses the host can
 run comfortably. Keep `R1_HERMES_PER_DEVICE_CONCURRENCY=1` unless one trusted device is explicitly
 allowed to consume multiple slots.
+
+Leave `R1_HERMES_ALLOW_PUBLIC_BIND` unset for localhost and concrete IP binds. Setting it to `1`
+allows all-interface binds and should be treated as an explicit exposure acknowledgement, not
+routine configuration.
 
 If `r1-hermes` is not installed at `~/.local/bin/r1-hermes`, override `ExecStart` with the exact absolute path and keep the command shell-free:
 

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import textwrap
@@ -10,6 +11,7 @@ from r1_hermes.r1_client import R1ProbeClient
 from .replay_helpers import FixtureReplayFlow, replay_fixture_flow
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "r1_payloads"
+WILDCARD_IPV4 = ".".join(("0", "0", "0", "0"))
 
 
 @pytest.mark.asyncio
@@ -77,6 +79,77 @@ async def test_hermes_cli_server_runs_with_fake_hermes_and_probe(tmp_path, unuse
         )
 
         assert replay.response_text == "FAKE HERMES: hello Hermes from community shim fixture"
+    finally:
+        if process.returncode is None:
+            process.terminate()
+        await process.wait()
+
+
+@pytest.mark.asyncio
+async def test_cli_server_rejects_wildcard_bind_without_public_ack(tmp_path, unused_tcp_port):
+    ready_file = tmp_path / "ready"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path.cwd() / "src")
+    env["R1_HERMES_GATEWAY_TOKEN"] = "server-token"
+    process = await asyncio_subprocess_exec(
+        sys.executable,
+        "-m",
+        "r1_hermes.cli",
+        "serve",
+        "--host",
+        WILDCARD_IPV4,
+        "--port",
+        str(unused_tcp_port),
+        "--state-dir",
+        str(tmp_path / "state"),
+        "--ready-file",
+        str(ready_file),
+        env=env,
+    )
+
+    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5)
+    error = stderr.decode()
+
+    assert process.returncode != 0
+    assert stdout.decode() == ""
+    assert "Refusing wildcard bind host" in error
+    assert "--allow-public-bind" in error
+    assert "server-token" not in error
+    assert not ready_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_cli_server_allows_wildcard_bind_with_public_ack(tmp_path, unused_tcp_port):
+    ready_file = tmp_path / "ready"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path.cwd() / "src")
+    env["R1_HERMES_GATEWAY_TOKEN"] = "server-token"
+    process = await asyncio_subprocess_exec(
+        sys.executable,
+        "-m",
+        "r1_hermes.cli",
+        "serve",
+        "--host",
+        WILDCARD_IPV4,
+        "--allow-public-bind",
+        "--port",
+        str(unused_tcp_port),
+        "--state-dir",
+        str(tmp_path / "state"),
+        "--ready-file",
+        str(ready_file),
+        env=env,
+    )
+    try:
+        await wait_for_file(ready_file)
+        result = await R1ProbeClient(
+            url=f"ws://127.0.0.1:{unused_tcp_port}/",
+            token="server-token",
+            device_id="r1-e2e",
+            timeout_seconds=5,
+        ).send_message("hello from probe")
+
+        assert result.response_text == "[r1-e2e/main] hello from probe"
     finally:
         if process.returncode is None:
             process.terminate()
