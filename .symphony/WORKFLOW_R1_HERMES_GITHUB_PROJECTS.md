@@ -59,7 +59,7 @@ Workflow rules:
 1. Treat GitHub Projects v2 `Status` as the queue source of truth.
 2. Use the local git checkout and shell/gh CLI for repository and GitHub mutation work. Do not use external connectors to mutate PR, issue, or Project state unless explicitly necessary and safer than `gh` for that operation.
 3. Before editing, move the project item from `Todo` to `In Progress`.
-4. Work from the `main` branch. Create a branch named `symphony/issue-{{ issue.identifier }}` or a similarly clear slug.
+4. Work from the `main` branch. Create a branch named `symphony/issue-<number>` using the issue number without the leading `#` (for example, `symphony/issue-3`) or a similarly clear slug.
 5. Read `README.md`, `docs/security.md`, and any relevant files before changing code.
 6. Use test-driven development for behavior changes: add or update failing tests first, then implement the smallest secure fix.
 7. Never print or commit gateway tokens, device tokens, QR payload secrets, API keys, or raw auth headers. Tests must use obvious dummy values only.
