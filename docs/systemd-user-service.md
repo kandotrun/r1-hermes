@@ -164,6 +164,22 @@ journalctl --user-unit r1-hermes.service --since today
 journalctl --user-unit r1-hermes.service -f
 ```
 
+Structured audit events are emitted as single-line JSON through the `r1_hermes.audit` logger. They
+use event names such as `auth.success`, `auth.failure`, `auth.parser_error`, `rate_limited`,
+`busy_rejected`, `chat.run_started`, `chat.run_final`, `chat.run_error`,
+`hermes.subprocess_failed`, `device.revoke`, `device.revoke_all`, and `device.cleanup`. Filter them with:
+
+```bash
+journalctl --user-unit r1-hermes.service --since today -o cat | grep '"event"'
+```
+
+The events intentionally use hashed identifiers and counts instead of raw device IDs, bearer tokens,
+QR payloads, authorization headers, full prompts, or Hermes stderr. `INFO` records successful
+lifecycle events, `WARNING` records rejected requests and Hermes subprocess exits, and `ERROR`
+records authenticated chat runs that failed behind the generic device-facing error boundary. The
+default service logs at `INFO`; set `R1_HERMES_LOG_LEVEL` in the env file if you need a different
+Python logging threshold.
+
 Do not redirect service output to a plain file unless that file has a retention policy and `0600` permissions. Prefer journald retention controls for log rotation:
 
 ```bash

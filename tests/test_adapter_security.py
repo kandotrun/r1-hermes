@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import stat
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from aiohttp import ClientSession, WSMsgType, web
 
 from r1_hermes import adapter as adapter_module
 from r1_hermes.adapter import DeviceState, R1HermesAdapter, R1HermesConfig
+from r1_hermes.chat_errors import ChatRunFailedError
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "r1_payloads"
 WILDCARD_IPV4 = ".".join(("0", "0", "0", "0"))
@@ -76,6 +78,18 @@ class FakeHealthRequest:
     def __init__(self, peername):
         self.remote = None
         self.transport = FakeHealthTransport(peername)
+
+
+def audit_events(caplog):
+    return [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.name == "r1_hermes.audit"
+    ]
+
+
+def serialized_audit_logs(caplog) -> str:
+    return "\n".join(record.getMessage() for record in caplog.records)
 
 
 @pytest_asyncio.fixture
@@ -330,6 +344,116 @@ async def test_connect_requires_gateway_token(running_adapter):
 
 
 @pytest.mark.asyncio
+async def test_successful_auth_audit_log_is_structured_and_redacted(running_adapter, caplog):
+    _adapter, _sink, base_url = running_adapter
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-logs",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-tests"},
+                    "device": {"id": "r1-audit-success"},
+                    "client": {"displayName": "Rabbit R1"},
+                },
+            }
+        )
+        hello = await ws.receive_json()
+        device_token = hello["payload"]["auth"]["deviceToken"]
+
+        logs = serialized_audit_logs(caplog)
+        events = audit_events(caplog)
+        challenge = next(event for event in events if event["event"] == "connect.challenge_issued")
+        success = next(event for event in events if event["event"] == "auth.success")
+
+        assert challenge["level"] == "info"
+        assert success["level"] == "info"
+        assert success["method"] == "connect"
+        assert success["auth_type"] == "gateway_token"
+        assert success["device_id_hash"].startswith("sha256:")
+        assert success["device_token_rotated"] is False
+        assert "gateway-token-for-tests" not in logs
+        assert device_token not in logs
+        assert "r1-audit-success" not in logs
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_auth_audit_log_distinguishes_failure_without_token_leak(
+    running_adapter,
+    caplog,
+):
+    _adapter, sink, base_url = running_adapter
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-bad",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "wrong-gateway-token-for-tests"},
+                    "device": {"id": "r1-audit-failure"},
+                },
+            }
+        )
+        msg = await ws.receive_json()
+        assert msg["error"]["code"] == "UNAUTHORIZED"
+
+        logs = serialized_audit_logs(caplog)
+        failure = next(event for event in audit_events(caplog) if event["event"] == "auth.failure")
+
+        assert failure["level"] == "warning"
+        assert failure["reason"] == "token_mismatch"
+        assert failure["method"] == "connect"
+        assert failure["device_id_hash"].startswith("sha256:")
+        assert "wrong-gateway-token-for-tests" not in logs
+        assert "gateway-token-for-tests" not in logs
+        assert "r1-audit-failure" not in logs
+        assert sink.messages == []
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_parser_error_audit_log_is_distinct_from_auth_failure(running_adapter, caplog):
+    _adapter, sink, base_url = running_adapter
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-parser-error",
+                "method": "connect",
+                "params": {"device": {"id": "r1-parser-error"}},
+            }
+        )
+        msg = await ws.receive_json()
+        assert msg["error"]["code"] == "BAD_REQUEST"
+
+        logs = serialized_audit_logs(caplog)
+        parser_error = next(
+            event for event in audit_events(caplog) if event["event"] == "auth.parser_error"
+        )
+
+        assert parser_error["level"] == "warning"
+        assert parser_error["error_code"] == "BAD_REQUEST"
+        assert parser_error["method"] == "connect"
+        assert "r1-parser-error" not in logs
+        assert sink.messages == []
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
 async def test_wrong_token_retries_are_rate_limited_by_peer_before_auth(
     unauth_limited_adapter,
 ):
@@ -522,6 +646,67 @@ async def test_authenticated_chat_send_runs_agent_once(running_adapter):
 
 
 @pytest.mark.asyncio
+async def test_chat_run_lifecycle_audit_logs_do_not_include_full_message_body(
+    running_adapter,
+    caplog,
+):
+    _adapter, _sink, base_url = running_adapter
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-lifecycle",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-tests"},
+                    "device": {"id": "r1-lifecycle"},
+                },
+            }
+        )
+        hello = await ws.receive_json()
+        device_token = hello["payload"]["auth"]["deviceToken"]
+
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "chat-lifecycle",
+                "method": "chat.send",
+                "params": {
+                    "message": "full private prompt DUMMY_SECRET_TOKEN_DO_NOT_USE",
+                    "sessionKey": "main",
+                    "idempotencyKey": "run-lifecycle",
+                },
+            }
+        )
+        assert (await ws.receive_json())["ok"] is True
+        assert (await ws.receive_json())["payload"]["state"] == "started"
+        assert (await ws.receive_json())["payload"]["state"] == "final"
+
+        logs = serialized_audit_logs(caplog)
+        events = audit_events(caplog)
+        started = next(event for event in events if event["event"] == "chat.run_started")
+        final = next(event for event in events if event["event"] == "chat.run_final")
+
+        assert started["run_id_hash"].startswith("sha256:")
+        assert started["message_chars"] == len("full private prompt DUMMY_SECRET_TOKEN_DO_NOT_USE")
+        assert final["response_chars"] == len(
+            "echo: full private prompt DUMMY_SECRET_TOKEN_DO_NOT_USE"
+        )
+        assert final["duration_ms"] >= 0
+        assert "full private prompt" not in logs
+        assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in logs
+        assert "run-lifecycle" not in logs
+        assert "r1-lifecycle" not in logs
+        assert "gateway-token-for-tests" not in logs
+        assert device_token not in logs
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("fixture_name", "expected_device_id", "expected_ack_events"),
     [
@@ -707,6 +892,80 @@ async def test_chat_handler_errors_emit_generic_error_event_without_token_leak(
         assert sink.messages == [
             {"text": "trigger failure", "device_id": "r1-error", "session_key": "main"}
         ]
+    finally:
+        if session is not None:
+            await ws.close()
+            await session.close()
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_hermes_failure_audit_log_is_redacted_and_distinct(caplog, unused_tcp_port, tmp_path):
+    sink = RaisingHermesSink(ChatRunFailedError())
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            max_message_chars=128,
+        ),
+        message_handler=sink,
+    )
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    await adapter.start()
+    session = None
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        session, ws = await ws_connect(base_url)
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-hermes-fail",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-tests"},
+                    "device": {"id": "r1-hermes-fail"},
+                },
+            }
+        )
+        hello = await ws.receive_json()
+        device_token = hello["payload"]["auth"]["deviceToken"]
+
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "chat-hermes-fail",
+                "method": "chat.send",
+                "params": {
+                    "message": "private failure prompt DUMMY_SECRET_TOKEN_DO_NOT_USE",
+                    "sessionKey": "main",
+                    "idempotencyKey": "run-hermes-fail",
+                },
+            }
+        )
+        assert (await ws.receive_json())["ok"] is True
+        assert (await ws.receive_json())["payload"]["state"] == "started"
+        error = await ws.receive_json()
+        assert error["payload"]["error"]["code"] == "CHAT_RUN_FAILED"
+
+        logs = serialized_audit_logs(caplog)
+        failure = next(
+            event for event in audit_events(caplog) if event["event"] == "chat.run_error"
+        )
+
+        assert failure["level"] == "error"
+        assert failure["error_code"] == "CHAT_RUN_FAILED"
+        assert failure["safe_message"] == "chat run failed"
+        assert failure["run_id_hash"].startswith("sha256:")
+        assert failure["duration_ms"] >= 0
+        assert "private failure prompt" not in logs
+        assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in logs
+        assert "run-hermes-fail" not in logs
+        assert "r1-hermes-fail" not in logs
+        assert "gateway-token-for-tests" not in logs
+        assert device_token not in logs
     finally:
         if session is not None:
             await ws.close()
@@ -1064,6 +1323,51 @@ async def test_rate_limit_rejects_excess_messages(running_adapter):
 
 
 @pytest.mark.asyncio
+async def test_rate_limit_audit_log_is_redacted(running_adapter, caplog):
+    _adapter, _sink, base_url = running_adapter
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    session, ws = await ws_connect(base_url)
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-rate-log",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-tests"},
+                    "device": {"id": "r1-rate-log"},
+                },
+            }
+        )
+        hello = await ws.receive_json()
+        device_token = hello["payload"]["auth"]["deviceToken"]
+        for i in range(2):
+            await send_chat(ws, rid=f"chat-rate-{i}", message=f"allowed private {i}")
+            assert (await ws.receive_json())["ok"] is True
+            assert (await ws.receive_json())["payload"]["state"] == "started"
+            assert (await ws.receive_json())["payload"]["state"] == "final"
+
+        await send_chat(ws, rid="chat-rate-over", message="blocked private body")
+        limited = await ws.receive_json()
+        assert limited["error"]["code"] == "RATE_LIMITED"
+
+        logs = serialized_audit_logs(caplog)
+        event = next(event for event in audit_events(caplog) if event["event"] == "rate_limited")
+
+        assert event["level"] == "warning"
+        assert event["limit"] == 2
+        assert event["window_seconds"] == 60
+        assert event["message_chars"] == len("blocked private body")
+        assert "blocked private body" not in logs
+        assert "r1-rate-log" not in logs
+        assert "gateway-token-for-tests" not in logs
+        assert device_token not in logs
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
 async def test_global_concurrency_rejects_excess_runs_across_devices_without_running_handler(
     unused_tcp_port,
     tmp_path,
@@ -1113,6 +1417,64 @@ async def test_global_concurrency_rejects_excess_runs_across_devices_without_run
         for _session, ws in connections[:2]:
             final = await ws.receive_json()
             assert final["payload"]["state"] == "final"
+    finally:
+        sink.release.set()
+        for session, ws in connections:
+            await ws.close()
+            await session.close()
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_busy_audit_log_identifies_global_concurrency_without_prompt_leak(
+    unused_tcp_port,
+    tmp_path,
+    caplog,
+):
+    sink = BlockingHermesSink()
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            max_message_chars=128,
+            per_device_concurrency=1,
+            global_concurrency=1,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    await adapter.start()
+    connections = []
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        for device_id in ("r1-busy-a", "r1-busy-b"):
+            connections.append(await authenticated_ws(base_url, device_id=device_id))
+
+        await send_chat(connections[0][1], rid="chat-active", message="active private body")
+        assert (await connections[0][1].receive_json())["ok"] is True
+        assert (await connections[0][1].receive_json())["payload"]["state"] == "started"
+        await sink.wait_for_calls(1)
+
+        await send_chat(connections[1][1], rid="chat-busy", message="busy private body")
+        busy = await connections[1][1].receive_json()
+        assert busy["error"]["code"] == "BUSY"
+
+        logs = serialized_audit_logs(caplog)
+        event = next(event for event in audit_events(caplog) if event["event"] == "busy_rejected")
+
+        assert event["level"] == "warning"
+        assert event["reason"] == "global_concurrency"
+        assert event["global_inflight"] == 1
+        assert event["global_limit"] == 1
+        assert event["message_chars"] == len("busy private body")
+        assert "busy private body" not in logs
+        assert "active private body" not in logs
+        assert "r1-busy" not in logs
+        assert "gateway-token-for-tests" not in logs
     finally:
         sink.release.set()
         for session, ws in connections:
@@ -1505,3 +1867,26 @@ def test_device_state_prunes_expired_records_without_breaking_valid_devices(
     assert "r1-fresh" in state.devices
     assert state.verify_device_token("r1-old", old_token) is False
     assert state.verify_device_token("r1-fresh", fresh_token) is True
+
+
+def test_device_state_revoke_and_cleanup_emit_redacted_audit_logs(tmp_path, caplog):
+    state = DeviceState(tmp_path / "state")
+    token = state.issue_device_token("r1-log-device")
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+
+    assert state.revoke("r1-log-device") is True
+    assert state.revoke("r1-missing-device") is False
+    assert state.prune_expired() == 0
+
+    logs = serialized_audit_logs(caplog)
+    events = audit_events(caplog)
+    revoke_events = [event for event in events if event["event"] == "device.revoke"]
+    cleanup = next(event for event in events if event["event"] == "device.cleanup")
+
+    assert revoke_events[0]["removed"] is True
+    assert revoke_events[0]["device_id_hash"].startswith("sha256:")
+    assert revoke_events[1]["removed"] is False
+    assert cleanup["removed"] == 0
+    assert "r1-log-device" not in logs
+    assert "r1-missing-device" not in logs
+    assert token not in logs

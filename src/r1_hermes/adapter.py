@@ -18,6 +18,7 @@ from typing import Any
 
 from aiohttp import WSMsgType, web
 
+from .audit import audit_log, hash_identifier
 from .chat_errors import ChatRunError, ChatRunTimeoutError
 from .payloads import (
     PayloadParseError,
@@ -221,6 +222,23 @@ class DeviceRecord:
         )
 
 
+@dataclass(frozen=True)
+class DeviceTokenVerification:
+    ok: bool
+    rotated_digest: bool = False
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class AuthResult:
+    ok: bool
+    device_id: str = ""
+    device_token: str = ""
+    auth_type: str = ""
+    device_token_rotated: bool = False
+    failure_reason: str = ""
+
+
 class DeviceState:
     """Device-token store that persists keyed digests and binds tokens to device IDs."""
 
@@ -314,10 +332,13 @@ class DeviceState:
         return token
 
     def verify_device_token(self, device_id: str, token: str) -> bool:
+        return self.verify_device_token_detailed(device_id, token).ok
+
+    def verify_device_token_detailed(self, device_id: str, token: str) -> DeviceTokenVerification:
         self.load()
         record = self.devices.get(device_id)
         if not record:
-            return False
+            return DeviceTokenVerification(False, reason="unknown_device")
         now = _now_ms()
         token_hash = _hash_token(token, self._digest_key)
         ok = hmac.compare_digest(record.token_hash, token_hash)
@@ -326,14 +347,14 @@ class DeviceState:
             ok = hmac.compare_digest(record.token_hash, _legacy_hash_token(token))
             needs_upgrade = ok
         if not ok:
-            return False
+            return DeviceTokenVerification(False, reason="token_mismatch")
         if self.is_expired(record, now_ms=now):
-            return False
+            return DeviceTokenVerification(False, reason="device_token_expired")
         if needs_upgrade:
             record.token_hash = token_hash
         record.last_seen_at_ms = now
         self.save()
-        return True
+        return DeviceTokenVerification(True, rotated_digest=needs_upgrade)
 
     def device_ids(self) -> list[str]:
         self.load()
@@ -345,15 +366,28 @@ class DeviceState:
         self.devices.pop(device_id, None)
         if existed:
             self.save()
+        audit_log(
+            "info",
+            "device.revoke",
+            device_id_hash=hash_identifier(device_id),
+            removed=existed,
+        )
         return existed
 
     def revoke_all(self) -> list[str]:
         self.load()
         revoked = sorted(self.devices)
         if not revoked:
+            audit_log("info", "device.revoke_all", revoked=0, device_id_hashes=[])
             return []
         self.devices.clear()
         self.save()
+        audit_log(
+            "info",
+            "device.revoke_all",
+            revoked=len(revoked),
+            device_id_hashes=[hash_identifier(device_id) for device_id in revoked],
+        )
         return revoked
 
     def prune_expired(self) -> int:
@@ -368,6 +402,7 @@ class DeviceState:
             self.devices.pop(device_id, None)
         if expired:
             self.save()
+        audit_log("info", "device.cleanup", removed=len(expired))
         return len(expired)
 
     def is_expired(self, record: DeviceRecord, *, now_ms: int | None = None) -> bool:
@@ -545,6 +580,13 @@ class R1HermesAdapter:
         ws = web.WebSocketResponse(heartbeat=20, max_msg_size=self.config.max_message_chars * 4)
         await ws.prepare(request)
         if not self._unauthenticated_limiter.allow_connection(peer_key):
+            audit_log(
+                "warning",
+                "rate_limited",
+                phase="unauthenticated_connection",
+                peer_hash=hash_identifier(peer_key),
+                limit=self.config.unauthenticated_connection_limit,
+            )
             await _send_error(ws, None, "RATE_LIMITED", "too many unauthenticated attempts")
             await ws.close(code=POLICY_VIOLATION_CLOSE_CODE, message=b"rate limited")
             return ws
@@ -561,6 +603,7 @@ class R1HermesAdapter:
                 "payload": {"nonce": nonce, "ts": _now_ms()},
             }
         )
+        audit_log("info", "connect.challenge_issued", peer_hash=hash_identifier(peer_key))
 
         try:
             async for msg in ws:
@@ -599,11 +642,20 @@ class R1HermesAdapter:
             not authenticated
             and time.monotonic() - session_started > self.config.unauthenticated_timeout_seconds
         ):
+            audit_log("warning", "auth.timeout", peer_hash=hash_identifier(peer_key))
             await _send_error(ws, None, "UNAUTHENTICATED", "connect timeout")
             await ws.close(code=POLICY_VIOLATION_CLOSE_CODE, message=b"connect timeout")
             return device_id, authenticated
 
         if not authenticated and not self._unauthenticated_limiter.record_attempt(peer_key):
+            audit_log(
+                "warning",
+                "rate_limited",
+                phase="unauthenticated",
+                peer_hash=hash_identifier(peer_key),
+                limit=self.config.unauthenticated_attempt_limit,
+                window_seconds=self.config.unauthenticated_attempt_window_seconds,
+            )
             await _send_error(ws, None, "RATE_LIMITED", "too many unauthenticated attempts")
             await ws.close(code=POLICY_VIOLATION_CLOSE_CODE, message=b"rate limited")
             return device_id, authenticated
@@ -611,18 +663,24 @@ class R1HermesAdapter:
         try:
             frame = json.loads(msg.data)
         except json.JSONDecodeError:
+            audit_log("warning", "auth.parser_error", error_code="BAD_JSON")
             await _send_error(ws, None, "BAD_JSON", "invalid JSON")
             return device_id, authenticated
         if not isinstance(frame, dict):
+            audit_log("warning", "auth.parser_error", error_code="BAD_REQUEST")
             await _send_error(ws, None, "BAD_REQUEST", "request frame must be an object")
             return device_id, authenticated
 
         method = frame.get("method")
         rid = frame.get("id")
         if frame.get("type") != "req":
+            if not authenticated:
+                audit_log("warning", "auth.parser_error", error_code="BAD_REQUEST")
             await _send_error(ws, rid, "BAD_REQUEST", "expected req frame")
             return device_id, authenticated
         if not isinstance(method, str) or not method.strip():
+            if not authenticated:
+                audit_log("warning", "auth.parser_error", error_code="BAD_REQUEST")
             await _send_error(ws, rid, "BAD_REQUEST", "method is required")
             return device_id, authenticated
 
@@ -641,6 +699,12 @@ class R1HermesAdapter:
                 self._unauthenticated_limiter.clear(peer_key)
             return next_device_id, next_authenticated
         if not authenticated:
+            audit_log(
+                "warning",
+                "auth.failure",
+                reason="request_before_connect",
+                method_hash=hash_identifier(method),
+            )
             await _send_error(ws, rid, "UNAUTHENTICATED", "connect required before requests")
             return device_id, authenticated
         await self._handle_authenticated_request(ws, rid, method, frame, device_id)
@@ -652,24 +716,45 @@ class R1HermesAdapter:
         try:
             connect_request = parse_connect_params(request_params(frame))
         except PayloadParseError as exc:
+            audit_log(
+                "warning",
+                "auth.parser_error",
+                error_code=exc.code,
+                method=str(frame.get("method") or ""),
+            )
             await _send_error(ws, rid, exc.code, exc.message)
             return "", False
 
-        ok, device_id_or_error, device_token = self._authenticate_connect(
+        auth_result = self._authenticate_connect(
             connect_request.auth_token,
             device_id=connect_request.device_id,
             display_name=connect_request.display_name,
         )
-        if not ok:
-            await _send_error(ws, rid, "UNAUTHORIZED", device_id_or_error)
+        if not auth_result.ok:
+            audit_log(
+                "warning",
+                "auth.failure",
+                reason=auth_result.failure_reason or "token_mismatch",
+                method=str(frame.get("method") or ""),
+                device_id_hash=hash_identifier(connect_request.device_id),
+            )
+            await _send_error(ws, rid, "UNAUTHORIZED", "auth token mismatch")
             await ws.close(code=POLICY_VIOLATION_CLOSE_CODE, message=b"unauthorized")
             return "", False
-        await ws.send_json(_hello_response(rid, device_token))
+        audit_log(
+            "info",
+            "auth.success",
+            method=str(frame.get("method") or ""),
+            auth_type=auth_result.auth_type,
+            device_id_hash=hash_identifier(auth_result.device_id),
+            device_token_rotated=auth_result.device_token_rotated,
+        )
+        await ws.send_json(_hello_response(rid, auth_result.device_token))
         if frame.get("method") == "gateway.connect":
             for event in GATEWAY_CONNECT_ACK_EVENTS:
-                await ws.send_json(_connect_ack_event(event, device_id=device_id_or_error))
-        await self._on_ws_authenticated(ws, device_id=device_id_or_error)
-        return device_id_or_error, True
+                await ws.send_json(_connect_ack_event(event, device_id=auth_result.device_id))
+        await self._on_ws_authenticated(ws, device_id=auth_result.device_id)
+        return auth_result.device_id, True
 
     async def _handle_authenticated_request(
         self,
@@ -725,18 +810,31 @@ class R1HermesAdapter:
 
     def _authenticate_connect(
         self, supplied: str, *, device_id: str, display_name: str
-    ) -> tuple[bool, str, str]:
+    ) -> AuthResult:
         if hmac.compare_digest(supplied, self.config.gateway_token):
-            return (
-                True,
-                device_id,
-                self.state.issue_device_token(device_id, display_name=display_name),
+            return AuthResult(
+                ok=True,
+                device_id=device_id,
+                device_token=self.state.issue_device_token(device_id, display_name=display_name),
+                auth_type="gateway_token",
             )
 
-        if self.state.verify_device_token(device_id, supplied):
-            return True, device_id, supplied
+        verification = self.state.verify_device_token_detailed(device_id, supplied)
+        if verification.ok:
+            return AuthResult(
+                ok=True,
+                device_id=device_id,
+                device_token=supplied,
+                auth_type="device_token",
+                device_token_rotated=verification.rotated_digest,
+            )
 
-        return False, "auth token mismatch", ""
+        reason = (
+            "device_token_expired"
+            if verification.reason == "device_token_expired"
+            else "token_mismatch"
+        )
+        return AuthResult(ok=False, failure_reason=reason)
 
     async def _handle_chat_send(
         self, ws: web.WebSocketResponse, rid: str | None, frame: dict[str, Any], device_id: str
@@ -744,26 +842,66 @@ class R1HermesAdapter:
         try:
             chat_request = parse_chat_send_params(request_params(frame))
         except PayloadParseError as exc:
+            audit_log(
+                "warning",
+                "chat.parser_error",
+                error_code=exc.code,
+                device_id_hash=hash_identifier(device_id),
+            )
             await _send_error(ws, rid, exc.code, exc.message)
             return
         message_text = chat_request.message
         if len(message_text) > self.config.max_message_chars:
+            audit_log(
+                "warning",
+                "chat.message_too_large",
+                device_id_hash=hash_identifier(device_id),
+                message_chars=len(message_text),
+                max_message_chars=self.config.max_message_chars,
+            )
             await _send_error(ws, rid, "MESSAGE_TOO_LARGE", "message exceeds limit")
             return
         if not self._rate_limiter.allow(device_id):
+            audit_log(
+                "warning",
+                "rate_limited",
+                phase="authenticated_chat",
+                device_id_hash=hash_identifier(device_id),
+                limit=self.config.rate_limit_messages,
+                window_seconds=self.config.rate_limit_window_seconds,
+                message_chars=len(message_text),
+            )
             await _send_error(ws, rid, "RATE_LIMITED", "too many messages")
             return
 
         busy = False
+        busy_reason = ""
+        global_inflight = 0
+        device_inflight = 0
         async with self._inflight_lock:
+            global_inflight = self._global_inflight
+            device_inflight = self._inflight_by_device[device_id]
             if self._global_inflight >= self.config.global_concurrency:
                 busy = True
+                busy_reason = "global_concurrency"
             elif self._inflight_by_device[device_id] >= self.config.per_device_concurrency:
                 busy = True
+                busy_reason = "per_device_concurrency"
             else:
                 self._inflight_by_device[device_id] += 1
                 self._global_inflight += 1
         if busy:
+            audit_log(
+                "warning",
+                "busy_rejected",
+                reason=busy_reason,
+                device_id_hash=hash_identifier(device_id),
+                global_inflight=global_inflight,
+                global_limit=self.config.global_concurrency,
+                device_inflight=device_inflight,
+                per_device_limit=self.config.per_device_concurrency,
+                message_chars=len(message_text),
+            )
             await _send_error(ws, rid, "BUSY", "gateway is busy")
             return
 
@@ -771,6 +909,7 @@ class R1HermesAdapter:
         session_key = chat_request.session_key
         response = ""
         error: ChatRunError | None = None
+        started_at = time.monotonic()
         try:
             await self._on_chat_session_active(ws, device_id=device_id, session_key=session_key)
             await ws.send_json(
@@ -793,6 +932,14 @@ class R1HermesAdapter:
                     },
                 }
             )
+            audit_log(
+                "info",
+                "chat.run_started",
+                device_id_hash=hash_identifier(device_id),
+                session_key_hash=hash_identifier(session_key),
+                run_id_hash=hash_identifier(run_id),
+                message_chars=len(message_text),
+            )
             try:
                 response = await self.message_handler(
                     message_text, device_id=device_id, session_key=session_key
@@ -813,6 +960,16 @@ class R1HermesAdapter:
                     self._global_inflight = 0
 
         if error is not None:
+            audit_log(
+                "error",
+                "chat.run_error",
+                device_id_hash=hash_identifier(device_id),
+                session_key_hash=hash_identifier(session_key),
+                run_id_hash=hash_identifier(run_id),
+                error_code=error.code,
+                safe_message=error.safe_message,
+                duration_ms=_elapsed_ms(started_at),
+            )
             await ws.send_json(
                 {
                     "type": "event",
@@ -828,6 +985,15 @@ class R1HermesAdapter:
             )
             return
 
+        audit_log(
+            "info",
+            "chat.run_final",
+            device_id_hash=hash_identifier(device_id),
+            session_key_hash=hash_identifier(session_key),
+            run_id_hash=hash_identifier(run_id),
+            response_chars=len(str(response or "")),
+            duration_ms=_elapsed_ms(started_at),
+        )
         await ws.send_json(
             {
                 "type": "event",
@@ -913,6 +1079,10 @@ def _is_unspecified_bind_address(address: str) -> bool:
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, int((time.monotonic() - started_at) * 1000))
 
 
 def _timestamp_from_json(data: dict[str, Any], key: str, *, default: int) -> int:

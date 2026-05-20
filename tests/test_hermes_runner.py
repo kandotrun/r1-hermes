@@ -1,4 +1,6 @@
 import asyncio
+import json
+import logging
 
 import pytest
 
@@ -128,6 +130,39 @@ async def test_runner_returns_short_error_without_leaking_stderr_on_failure():
     assert excinfo.value.code == "CHAT_RUN_FAILED"
     assert excinfo.value.safe_message == "chat run failed"
     assert "SECRET_TOKEN" not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_runner_failure_audit_log_is_structured_and_redacted(caplog):
+    async def fake_factory(*_argv, **_kwargs):
+        return FakeProcess(b"", b"SECRET_TOKEN=abc failure details", 2)
+
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    runner = HermesCliRunner(process_factory=fake_factory)
+
+    with pytest.raises(ChatRunFailedError):
+        await runner(
+            "full private prompt SECRET_TOKEN=abc",
+            device_id="r1-hermes-runner",
+            session_key="main",
+        )
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    event = next(
+        json.loads(record.message)
+        for record in caplog.records
+        if record.name == "r1_hermes.audit" and "hermes.subprocess_failed" in record.message
+    )
+
+    assert event["event"] == "hermes.subprocess_failed"
+    assert event["level"] == "warning"
+    assert event["returncode"] == 2
+    assert event["stderr_bytes"] == len(b"SECRET_TOKEN=abc failure details")
+    assert event["device_id_hash"].startswith("sha256:")
+    assert event["session_key_hash"].startswith("sha256:")
+    assert "SECRET_TOKEN" not in logs
+    assert "full private prompt" not in logs
+    assert "r1-hermes-runner" not in logs
 
 
 @pytest.mark.asyncio

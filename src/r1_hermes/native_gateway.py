@@ -9,7 +9,7 @@ from typing import Any
 
 from aiohttp import web
 
-from .adapter import R1HermesAdapter, R1HermesConfig
+from .adapter import AuthResult, R1HermesAdapter, R1HermesConfig
 from .toolsets import sanitize_platform_toolsets
 
 DEFAULT_NATIVE_PLATFORM = "rabbit_r1"
@@ -127,10 +127,10 @@ class R1NativeGatewayAdapter(R1HermesAdapter):
 
     def _authenticate_connect(
         self, supplied: str, *, device_id: str, display_name: str
-    ) -> tuple[bool, str, str]:
+    ) -> AuthResult:
         safe_device_id = _safe_component(device_id)
         if self.allowed_device_ids is not None and safe_device_id not in self.allowed_device_ids:
-            return False, "device is not allowed", ""
+            return AuthResult(ok=False, failure_reason="device_not_allowed")
         return super()._authenticate_connect(
             supplied,
             device_id=safe_device_id,
