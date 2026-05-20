@@ -6,7 +6,14 @@ import os
 import sys
 from pathlib import Path
 
-from .adapter import DEFAULT_GLOBAL_CONCURRENCY, DeviceState, R1HermesAdapter, R1HermesConfig
+from .adapter import (
+    DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS,
+    DEFAULT_DEVICE_TOKEN_MAX_AGE_SECONDS,
+    DEFAULT_GLOBAL_CONCURRENCY,
+    DeviceState,
+    R1HermesAdapter,
+    R1HermesConfig,
+)
 from .hermes_runner import HermesCliRunner
 from .qr import build_pairing_payload, write_qr_png
 from .r1_client import R1ProbeClient
@@ -48,6 +55,32 @@ def add_server_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         default=_env_flag("R1_HERMES_ALLOW_PUBLIC_BIND"),
         help="Explicitly allow wildcard binds such as 0.0.0.0 or :: after reviewing exposure",
+    )
+    add_device_expiry_args(parser)
+
+
+def add_device_expiry_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--device-token-max-age-seconds",
+        type=int,
+        default=int(
+            os.environ.get(
+                "R1_HERMES_DEVICE_TOKEN_MAX_AGE_SECONDS",
+                str(DEFAULT_DEVICE_TOKEN_MAX_AGE_SECONDS),
+            )
+        ),
+        help="Maximum device-token lifetime; 0 disables max-age expiration",
+    )
+    parser.add_argument(
+        "--device-token-idle-timeout-seconds",
+        type=int,
+        default=int(
+            os.environ.get(
+                "R1_HERMES_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS",
+                str(DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS),
+            )
+        ),
+        help="Maximum idle time before device-token expiration; 0 disables idle expiration",
     )
 
 
@@ -98,6 +131,10 @@ def main() -> None:
     revoke.add_argument("--state-dir", default=str(Path.home() / ".r1-hermes"))
     revoke.add_argument("--device-id", required=True)
 
+    cleanup = sub.add_parser("cleanup", help="Prune expired Rabbit R1 device records")
+    cleanup.add_argument("--state-dir", default=str(Path.home() / ".r1-hermes"))
+    add_device_expiry_args(cleanup)
+
     probe = sub.add_parser("probe", help="Send a Rabbit R1-style probe message to a gateway")
     probe.add_argument("--url", required=True, help="WebSocket URL, e.g. ws://100.x.y.z:18789/")
     probe.add_argument("--token", default=os.environ.get("R1_HERMES_GATEWAY_TOKEN", ""))
@@ -132,6 +169,8 @@ def main() -> None:
                 allow_public_bind=args.allow_public_bind,
                 per_device_concurrency=args.per_device_concurrency,
                 global_concurrency=args.global_concurrency,
+                device_token_max_age_seconds=args.device_token_max_age_seconds,
+                device_token_idle_timeout_seconds=args.device_token_idle_timeout_seconds,
             )
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
@@ -183,6 +222,14 @@ def main() -> None:
         if not state.revoke(args.device_id):
             raise SystemExit(f"device not found: {args.device_id}")
         print(f"Revoked device: {args.device_id}")
+    elif args.command == "cleanup":
+        state = DeviceState(
+            Path(args.state_dir),
+            device_token_max_age_seconds=args.device_token_max_age_seconds,
+            device_token_idle_timeout_seconds=args.device_token_idle_timeout_seconds,
+        )
+        removed = state.prune_expired()
+        print(f"Pruned expired devices: {removed}")
 
 
 async def _run_forever(adapter: R1HermesAdapter, *, ready_file: Path | None = None) -> None:

@@ -9,6 +9,7 @@ This repository is intentionally security-first. It implements the Rabbit R1/Ope
 - no full-token logging
 - no unauthenticated admin page
 - device tokens are bound to device IDs and stored only as keyed HMAC digests
+- device tokens expire by age and idle time, and stale records can be pruned locally
 - unauthenticated handshake limits plus authenticated rate, length, global concurrency, and per-device concurrency limits
 - explicit install docs and security checklist
 
@@ -83,6 +84,20 @@ If you have explicitly reviewed the network boundary and still need a wildcard b
 `--allow-public-bind` or `R1_HERMES_ALLOW_PUBLIC_BIND=1`; otherwise prefer `127.0.0.1` plus
 Tailscale Serve, a reverse proxy with mTLS, or a specific Tailscale/LAN IP.
 
+Device tokens expire after 90 days or 30 idle days by default. Tune only when your physical-device
+rotation policy requires it:
+
+```bash
+r1-hermes hermes \
+  --device-token-max-age-seconds 7776000 \
+  --device-token-idle-timeout-seconds 2592000
+```
+
+The same values can be set with `R1_HERMES_DEVICE_TOKEN_MAX_AGE_SECONDS` and
+`R1_HERMES_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS`. Use `0` only to disable a specific expiry check.
+Expired device tokens cannot reconnect; the Rabbit R1 must scan a fresh QR generated from the
+current gateway token.
+
 ## 3. Generate the Rabbit R1 QR payload
 
 ```bash
@@ -133,6 +148,15 @@ r1-hermes revoke --device-id r1-device-id
 Then restart the device pairing flow with a newly generated gateway token and a new QR PNG. See
 [`docs/security.md`](docs/security.md) for the full incident response checklist.
 
+To remove expired device records from `devices.json` without affecting still-valid pairings:
+
+```bash
+r1-hermes cleanup
+```
+
+Pass the same `--state-dir` and expiry settings used by the running gateway if they are not the
+defaults. The cleanup command reports only a count; it does not print stored hashes or tokens.
+
 ## Standalone demo gateway
 
 ```bash
@@ -164,6 +188,8 @@ R1_HERMES_UNAUTHENTICATED_COOLDOWN_SECONDS=60
 R1_HERMES_UNAUTHENTICATED_TIMEOUT_SECONDS=30
 R1_HERMES_RATE_LIMIT_MESSAGES=12
 R1_HERMES_RATE_LIMIT_WINDOW_SECONDS=60
+R1_HERMES_DEVICE_TOKEN_MAX_AGE_SECONDS=7776000
+R1_HERMES_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS=2592000
 ```
 
 Lower the unauthenticated limits for hostile networks. Do not loosen them to compensate for public

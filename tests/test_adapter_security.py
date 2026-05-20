@@ -8,7 +8,8 @@ import pytest
 import pytest_asyncio
 from aiohttp import ClientSession, WSMsgType
 
-from r1_hermes.adapter import R1HermesAdapter, R1HermesConfig
+from r1_hermes import adapter as adapter_module
+from r1_hermes.adapter import DeviceState, R1HermesAdapter, R1HermesConfig
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "r1_payloads"
 WILDCARD_IPV4 = ".".join(("0", "0", "0", "0"))
@@ -760,6 +761,73 @@ async def test_revoked_device_token_cannot_reconnect_or_run_agent(running_adapte
 
 
 @pytest.mark.asyncio
+async def test_expired_device_token_cannot_reconnect_or_run_agent(
+    monkeypatch,
+    unused_tcp_port,
+    tmp_path,
+):
+    now_ms = 1_000_000
+    monkeypatch.setattr(adapter_module, "_now_ms", lambda: now_ms)
+    sink = FakeHermesSink()
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            device_token_max_age_seconds=1,
+            device_token_idle_timeout_seconds=0,
+        ),
+        message_handler=sink,
+    )
+    await adapter.start()
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        session, ws = await ws_connect(base_url)
+        try:
+            await ws.send_json(
+                {
+                    "type": "req",
+                    "id": "connect-1",
+                    "method": "connect",
+                    "params": {
+                        "auth": {"token": "gateway-token-for-tests"},
+                        "device": {"id": "r1-expired"},
+                    },
+                }
+            )
+            hello = await ws.receive_json()
+            device_token = hello["payload"]["auth"]["deviceToken"]
+        finally:
+            await ws.close()
+            await session.close()
+
+        now_ms = 1_002_000
+
+        session2, ws2 = await ws_connect(base_url)
+        try:
+            await ws2.send_json(
+                {
+                    "type": "req",
+                    "id": "connect-2",
+                    "method": "connect",
+                    "params": {"auth": {"token": device_token}, "device": {"id": "r1-expired"}},
+                }
+            )
+            msg = await ws2.receive_json()
+            serialized = json.dumps(msg)
+            assert msg["ok"] is False
+            assert msg["error"]["code"] == "UNAUTHORIZED"
+            assert device_token not in serialized
+            assert sink.messages == []
+        finally:
+            await session2.close()
+    finally:
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
 async def test_malformed_json_shape_is_rejected_and_does_not_run_agent(running_adapter):
     _adapter, sink, base_url = running_adapter
     session, ws = await ws_connect(base_url)
@@ -1157,8 +1225,6 @@ def test_config_rejects_invalid_concurrency(tmp_path):
 
 
 def test_device_state_permissions_are_owner_only(tmp_path):
-    from r1_hermes.adapter import DeviceState
-
     state = DeviceState(tmp_path / "state")
     token = state.issue_device_token("r1-test")
     assert token
@@ -1168,8 +1234,6 @@ def test_device_state_permissions_are_owner_only(tmp_path):
 
 
 def test_device_state_uses_keyed_digest_for_new_records(tmp_path):
-    from r1_hermes.adapter import DeviceState
-
     state = DeviceState(tmp_path / "state")
     token = state.issue_device_token("r1-test")
 
@@ -1182,9 +1246,9 @@ def test_device_state_uses_keyed_digest_for_new_records(tmp_path):
     assert raw_sha256 not in state.path.read_text()
 
 
-def test_device_state_upgrades_legacy_sha256_digest_after_valid_auth(tmp_path):
-    from r1_hermes.adapter import DeviceState
-
+def test_device_state_upgrades_legacy_sha256_digest_after_valid_auth(monkeypatch, tmp_path):
+    now_ms = 1_000_000
+    monkeypatch.setattr(adapter_module, "_now_ms", lambda: now_ms)
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     token = "legacy-device-token-for-tests"
@@ -1220,8 +1284,6 @@ def test_device_state_upgrades_legacy_sha256_digest_after_valid_auth(tmp_path):
 
 
 def test_device_state_does_not_upgrade_legacy_sha256_digest_after_invalid_auth(tmp_path):
-    from r1_hermes.adapter import DeviceState
-
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     legacy_hash = hashlib.sha256(b"correct-device-token").hexdigest()
@@ -1248,8 +1310,6 @@ def test_device_state_does_not_upgrade_legacy_sha256_digest_after_invalid_auth(t
 
 
 def test_device_state_rejects_symlinked_digest_key(tmp_path):
-    from r1_hermes.adapter import DeviceState
-
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     target = tmp_path / "external-key"
@@ -1258,3 +1318,102 @@ def test_device_state_rejects_symlinked_digest_key(tmp_path):
 
     with pytest.raises(ValueError, match="must not be a symlink"):
         DeviceState(state_dir)
+
+
+def test_device_state_accepts_fresh_token_and_updates_last_seen(monkeypatch, tmp_path):
+    now_ms = 1_000_000
+    monkeypatch.setattr(adapter_module, "_now_ms", lambda: now_ms)
+    state = DeviceState(
+        tmp_path / "state",
+        device_token_max_age_seconds=60,
+        device_token_idle_timeout_seconds=30,
+    )
+    token = state.issue_device_token("r1-fresh")
+
+    now_ms = 1_020_000
+
+    assert state.verify_device_token("r1-fresh", token) is True
+    assert state.devices["r1-fresh"].last_seen_at_ms == 1_020_000
+
+
+def test_device_state_rejects_expired_token_with_hash_still_present(monkeypatch, tmp_path):
+    now_ms = 1_000_000
+    monkeypatch.setattr(adapter_module, "_now_ms", lambda: now_ms)
+    state = DeviceState(
+        tmp_path / "state",
+        device_token_max_age_seconds=60,
+        device_token_idle_timeout_seconds=0,
+    )
+    token = state.issue_device_token("r1-old")
+    assert "r1-old" in state.devices
+
+    now_ms = 1_061_000
+
+    assert state.verify_device_token("r1-old", token) is False
+    assert "r1-old" in state.devices
+
+
+def test_device_state_rejects_idle_expired_token(monkeypatch, tmp_path):
+    now_ms = 1_000_000
+    monkeypatch.setattr(adapter_module, "_now_ms", lambda: now_ms)
+    state = DeviceState(
+        tmp_path / "state",
+        device_token_max_age_seconds=0,
+        device_token_idle_timeout_seconds=30,
+    )
+    token = state.issue_device_token("r1-idle")
+
+    now_ms = 1_031_000
+
+    assert state.verify_device_token("r1-idle", token) is False
+
+
+def test_device_state_backfills_existing_records_missing_expiry_fields(monkeypatch, tmp_path):
+    now_ms = 1_000_000
+    monkeypatch.setattr(adapter_module, "_now_ms", lambda: now_ms)
+    state = DeviceState(tmp_path / "state")
+    token = state.issue_device_token("r1-existing")
+    data = json.loads(state.path.read_text())
+    del data["devices"]["r1-existing"]["created_at_ms"]
+    del data["devices"]["r1-existing"]["last_seen_at_ms"]
+    state.path.write_text(json.dumps(data))
+
+    now_ms = 1_050_000
+    migrated = DeviceState(
+        tmp_path / "state",
+        device_token_max_age_seconds=60,
+        device_token_idle_timeout_seconds=30,
+    )
+    record = migrated.devices["r1-existing"]
+
+    assert record.created_at_ms == 1_050_000
+    assert record.last_seen_at_ms == 1_050_000
+    saved = json.loads(migrated.path.read_text())["devices"]["r1-existing"]
+    assert saved["created_at_ms"] == 1_050_000
+    assert saved["last_seen_at_ms"] == 1_050_000
+    assert migrated.verify_device_token("r1-existing", token) is True
+
+
+def test_device_state_prunes_expired_records_without_breaking_valid_devices(
+    monkeypatch,
+    tmp_path,
+):
+    now_ms = 1_000_000
+    monkeypatch.setattr(adapter_module, "_now_ms", lambda: now_ms)
+    state = DeviceState(
+        tmp_path / "state",
+        device_token_max_age_seconds=60,
+        device_token_idle_timeout_seconds=0,
+    )
+    old_token = state.issue_device_token("r1-old")
+
+    now_ms = 1_050_000
+    fresh_token = state.issue_device_token("r1-fresh")
+
+    now_ms = 1_061_000
+
+    assert state.prune_expired() == 1
+    assert "r1-old" not in state.devices
+    assert "r1-fresh" in state.devices
+    assert state.verify_device_token("r1-old", old_token) is False
+    assert state.verify_device_token("r1-fresh", fresh_token) is True

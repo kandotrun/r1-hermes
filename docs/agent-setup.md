@@ -125,6 +125,11 @@ OK
 
 The probe must not print `deviceToken` or the gateway token.
 
+Device tokens expire by default after 90 days or 30 idle days. If the human asks for a different
+rotation window, set `R1_HERMES_DEVICE_TOKEN_MAX_AGE_SECONDS` and
+`R1_HERMES_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS` before starting the gateway and use the same values
+with `r1-hermes cleanup`.
+
 ## 6. Choose the real pairing address
 
 Rabbit R1 must be able to reach the host and port in the QR payload. Choose one:
