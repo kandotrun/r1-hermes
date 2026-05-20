@@ -11,6 +11,11 @@ class EchoSink:
         return f"echo: {device_id}/{session_key}: {text}"
 
 
+class RaisingSink:
+    async def __call__(self, text: str, *, device_id: str, session_key: str) -> str:
+        raise RuntimeError("DUMMY_SECRET_TOKEN_DO_NOT_USE failure details")
+
+
 @pytest_asyncio.fixture
 async def running_gateway(unused_tcp_port, tmp_path):
     port = unused_tcp_port
@@ -40,6 +45,7 @@ async def test_probe_client_completes_connect_and_chat_flow(running_gateway):
     assert result.connected is True
     assert result.device_token
     assert result.run_id
+    assert result.raw_event["payload"]["state"] == "final"
     assert result.response_text == "echo: r1-probe/main: hello Hermes"
 
 
@@ -63,6 +69,33 @@ async def test_probe_client_reports_auth_failure(running_gateway):
 
     with pytest.raises(R1ProbeError, match="UNAUTHORIZED"):
         await client.send_message("hello")
+
+
+@pytest.mark.asyncio
+async def test_probe_client_fails_on_chat_error_event(unused_tcp_port, tmp_path):
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="probe-token",
+            state_dir=tmp_path,
+            max_message_chars=512,
+        ),
+        message_handler=RaisingSink(),
+    )
+    await adapter.start()
+    try:
+        client = R1ProbeClient(url=f"ws://127.0.0.1:{port}/", token="probe-token")
+        with pytest.raises(R1ProbeError) as excinfo:
+            await client.send_message("hello")
+
+        error_text = str(excinfo.value)
+        assert "CHAT_RUN_FAILED: chat run failed" in error_text
+        assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in error_text
+        assert "probe-token" not in error_text
+    finally:
+        await adapter.stop()
 
 
 @pytest.mark.asyncio

@@ -96,7 +96,12 @@ class R1ProbeClient:
         while True:
             frame = await self._receive_json(ws)
             if frame.get("type") == "event" and frame.get("event") == "chat":
-                return frame
+                payload = frame.get("payload") or {}
+                state = str(payload.get("state") or "")
+                if state == "error":
+                    raise R1ProbeError(_chat_event_error_text(frame))
+                if state in {"final", ""}:
+                    return frame
 
     async def _receive_json(self, ws, *, expected: str = "gateway response") -> dict[str, Any]:
         try:
@@ -125,6 +130,14 @@ def _error_text(frame: dict[str, Any]) -> str:
     error = frame.get("error") or {}
     code = str(error.get("code") or "ERROR")
     message = str(error.get("message") or "request failed")
+    return f"{code}: {message}"
+
+
+def _chat_event_error_text(frame: dict[str, Any]) -> str:
+    payload = frame.get("payload") or {}
+    error = payload.get("error") or {}
+    code = str(error.get("code") or "CHAT_RUN_FAILED")
+    message = str(error.get("message") or "chat run failed")
     return f"{code}: {message}"
 
 

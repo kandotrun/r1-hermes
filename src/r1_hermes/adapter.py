@@ -15,6 +15,7 @@ from typing import Any
 
 from aiohttp import WSMsgType, web
 
+from .chat_errors import ChatRunError, ChatRunTimeoutError
 from .payloads import (
     PayloadParseError,
     parse_chat_send_params,
@@ -349,20 +350,6 @@ class R1HermesAdapter:
                 "payload": {"runId": run_id, "status": "started"},
             }
         )
-
-        try:
-            try:
-                response = await self.message_handler(
-                    message_text, device_id=device_id, session_key=session_key
-                )
-            except Exception as exc:  # pragma: no cover - defensive boundary
-                response = f"Error: {str(exc)[:300]}"
-        finally:
-            async with self._inflight_lock:
-                self._inflight_by_device[device_id] -= 1
-                if self._inflight_by_device[device_id] <= 0:
-                    self._inflight_by_device.pop(device_id, None)
-
         await ws.send_json(
             {
                 "type": "event",
@@ -371,6 +358,54 @@ class R1HermesAdapter:
                     "runId": run_id,
                     "sessionKey": session_key,
                     "seq": 1,
+                    "state": "started",
+                },
+            }
+        )
+
+        response = ""
+        error: ChatRunError | None = None
+        try:
+            try:
+                response = await self.message_handler(
+                    message_text, device_id=device_id, session_key=session_key
+                )
+            except ChatRunError as exc:
+                error = exc
+            except TimeoutError:
+                error = ChatRunTimeoutError()
+            except Exception:  # pragma: no cover - defensive boundary
+                error = ChatRunError()
+        finally:
+            async with self._inflight_lock:
+                self._inflight_by_device[device_id] -= 1
+                if self._inflight_by_device[device_id] <= 0:
+                    self._inflight_by_device.pop(device_id, None)
+
+        if error is not None:
+            await ws.send_json(
+                {
+                    "type": "event",
+                    "event": "chat",
+                    "payload": {
+                        "runId": run_id,
+                        "sessionKey": session_key,
+                        "seq": 2,
+                        "state": "error",
+                        "error": {"code": error.code, "message": error.safe_message},
+                    },
+                }
+            )
+            return
+
+        await ws.send_json(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "runId": run_id,
+                    "sessionKey": session_key,
+                    "seq": 2,
                     "state": "final",
                     "message": {
                         "role": "assistant",

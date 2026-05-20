@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from r1_hermes.chat_errors import ChatRunFailedError, ChatRunTimeoutError
 from r1_hermes.hermes_runner import HermesCliRunner, build_session_name
 
 
@@ -80,10 +81,13 @@ async def test_runner_returns_short_error_without_leaking_stderr_on_failure():
         return FakeProcess(b"", b"SECRET_TOKEN=abc failure details", 2)
 
     runner = HermesCliRunner(process_factory=fake_factory)
-    response = await runner("hi", device_id="r1", session_key="main")
 
-    assert response == "Hermes command failed with exit code 2. Check r1-hermes logs."
-    assert "SECRET_TOKEN" not in response
+    with pytest.raises(ChatRunFailedError) as excinfo:
+        await runner("hi", device_id="r1", session_key="main")
+
+    assert excinfo.value.code == "CHAT_RUN_FAILED"
+    assert excinfo.value.safe_message == "chat run failed"
+    assert "SECRET_TOKEN" not in str(excinfo.value)
 
 
 @pytest.mark.asyncio
@@ -107,9 +111,12 @@ async def test_runner_times_out_cleanly():
         return process
 
     runner = HermesCliRunner(process_factory=fake_factory, timeout_seconds=0.01)
-    response = await runner("hi", device_id="r1", session_key="main")
 
-    assert response == "Hermes command timed out. Please try again with a shorter request."
+    with pytest.raises(ChatRunTimeoutError) as excinfo:
+        await runner("hi", device_id="r1", session_key="main")
+
+    assert excinfo.value.code == "CHAT_RUN_TIMEOUT"
+    assert excinfo.value.safe_message == "chat run timed out"
     assert process.killed is True
 
 

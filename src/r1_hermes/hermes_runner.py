@@ -7,6 +7,8 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from .chat_errors import ChatRunFailedError, ChatRunTimeoutError
+
 ProcessFactory = Callable[..., Awaitable[asyncio.subprocess.Process]]
 
 logger = logging.getLogger(__name__)
@@ -58,7 +60,7 @@ class HermesCliRunner:
                 await process.wait()
             except Exception:  # pragma: no cover - best-effort cleanup
                 logger.exception("failed while waiting for timed-out Hermes process")
-            return "Hermes command timed out. Please try again with a shorter request."
+            raise ChatRunTimeoutError from None
 
         if process.returncode != 0:
             logger.warning(
@@ -66,9 +68,7 @@ class HermesCliRunner:
                 process.returncode,
                 len(stderr or b""),
             )
-            return (
-                f"Hermes command failed with exit code {process.returncode}. Check r1-hermes logs."
-            )
+            raise ChatRunFailedError
 
         output = stdout.decode("utf-8", errors="replace").strip()
         return output or "Hermes returned an empty response."
