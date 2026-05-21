@@ -699,6 +699,10 @@ class IdempotencyCache:
         self._prune(now=time.monotonic())
         return len(self._entries)
 
+    @property
+    def enabled(self) -> bool:
+        return self.max_entries > 0
+
     @staticmethod
     def _key(device_id: str, session_key: str, idempotency_key: str) -> tuple[str, str, str]:
         return device_id, session_key, idempotency_key
@@ -796,7 +800,7 @@ class R1HermesAdapter:
         authenticated = False
         device_id = ""
         session_started = time.monotonic()
-        active_chat_tasks: set[asyncio.Task[None]] = set()
+        active_chat_tasks: dict[asyncio.Task[None], bool] = {}
 
         await ws.send_json(
             {
@@ -839,7 +843,7 @@ class R1HermesAdapter:
         device_id: str,
         session_started: float,
         peer_key: str,
-        active_chat_tasks: set[asyncio.Task[None]],
+        active_chat_tasks: dict[asyncio.Task[None], bool],
     ) -> tuple[str, bool]:
         if msg.type != WSMsgType.TEXT:
             return device_id, authenticated
@@ -980,7 +984,7 @@ class R1HermesAdapter:
         method: str,
         frame: dict[str, Any],
         device_id: str,
-        active_chat_tasks: set[asyncio.Task[None]] | None = None,
+        active_chat_tasks: dict[asyncio.Task[None], bool] | None = None,
     ) -> None:
         if method in {"health", "gateway.health"}:
             await ws.send_json(
@@ -998,7 +1002,10 @@ class R1HermesAdapter:
                 self._handle_chat_send(ws, rid, frame, device_id),
                 name="r1-hermes-chat-send",
             )
-            active_chat_tasks.add(task)
+            active_chat_tasks[task] = _chat_task_cancel_on_disconnect(
+                frame,
+                idempotency_cache_enabled=self._idempotency_cache.enabled,
+            )
             task.add_done_callback(lambda done: _discard_finished_task(active_chat_tasks, done))
         else:
             await _send_error(ws, rid, "UNKNOWN_METHOD", "unsupported method")
@@ -1201,15 +1208,20 @@ class R1HermesAdapter:
                 "payload": {"runId": run_id, "status": "started"},
             }
             if not await _send_json_if_open(ws, started_ack):
-                audit_log(
-                    "info",
-                    "chat.run_cancelled",
-                    device_id_hash=hash_identifier(device_id),
-                    session_key_hash=hash_identifier(session_key),
-                    run_id_hash=hash_identifier(run_id),
-                    reason="websocket_disconnected",
-                    duration_ms=_elapsed_ms(started_at),
+                self._record_chat_delivery_lost(
+                    device_id=device_id,
+                    session_key=session_key,
+                    run_id=run_id,
+                    started_at=started_at,
+                    delivery_state="ack",
                 )
+                if idempotency_key:
+                    self._idempotency_cache.discard(
+                        device_id=device_id,
+                        session_key=session_key,
+                        idempotency_key=idempotency_key,
+                        run_id=run_id,
+                    )
                 return
             started_event = {
                 "type": "event",
@@ -1222,15 +1234,20 @@ class R1HermesAdapter:
                 },
             }
             if not await _send_json_if_open(ws, started_event):
-                audit_log(
-                    "info",
-                    "chat.run_cancelled",
-                    device_id_hash=hash_identifier(device_id),
-                    session_key_hash=hash_identifier(session_key),
-                    run_id_hash=hash_identifier(run_id),
-                    reason="websocket_disconnected",
-                    duration_ms=_elapsed_ms(started_at),
+                self._record_chat_delivery_lost(
+                    device_id=device_id,
+                    session_key=session_key,
+                    run_id=run_id,
+                    started_at=started_at,
+                    delivery_state="started",
                 )
+                if idempotency_key:
+                    self._idempotency_cache.discard(
+                        device_id=device_id,
+                        session_key=session_key,
+                        idempotency_key=idempotency_key,
+                        run_id=run_id,
+                    )
                 return
             audit_log(
                 "info",
@@ -1302,18 +1319,6 @@ class R1HermesAdapter:
                     duration_ms=_elapsed_ms(started_at),
                 )
 
-        if _ws_closed(ws):
-            audit_log(
-                "info",
-                "chat.run_cancelled",
-                device_id_hash=hash_identifier(device_id),
-                session_key_hash=hash_identifier(session_key),
-                run_id_hash=hash_identifier(run_id),
-                reason="websocket_disconnected",
-                duration_ms=_elapsed_ms(started_at),
-            )
-            return
-
         if error is not None:
             completed_event = _chat_error_event(
                 run_id, session_key, error, seq=_next_chat_seq(seq_ref)
@@ -1330,21 +1335,20 @@ class R1HermesAdapter:
                 duration_ms=_elapsed_ms(started_at),
             )
             if not await _send_json_if_open(ws, completed_event):
-                audit_log(
-                    "info",
-                    "chat.run_cancelled",
-                    device_id_hash=hash_identifier(device_id),
-                    session_key_hash=hash_identifier(session_key),
-                    run_id_hash=hash_identifier(run_id),
-                    reason="websocket_disconnected",
-                    duration_ms=_elapsed_ms(started_at),
+                self._record_chat_delivery_lost(
+                    device_id=device_id,
+                    session_key=session_key,
+                    run_id=run_id,
+                    started_at=started_at,
+                    delivery_state="error",
                 )
                 if idempotency_key:
-                    self._idempotency_cache.discard(
+                    self._idempotency_cache.complete(
                         device_id=device_id,
                         session_key=session_key,
                         idempotency_key=idempotency_key,
                         run_id=run_id,
+                        final_event=completed_event,
                     )
                 return
             if idempotency_key:
@@ -1361,21 +1365,20 @@ class R1HermesAdapter:
             run_id, session_key, response, seq=_next_chat_seq(seq_ref)
         )
         if not await _send_json_if_open(ws, completed_event):
-            audit_log(
-                "info",
-                "chat.run_cancelled",
-                device_id_hash=hash_identifier(device_id),
-                session_key_hash=hash_identifier(session_key),
-                run_id_hash=hash_identifier(run_id),
-                reason="websocket_disconnected",
-                duration_ms=_elapsed_ms(started_at),
+            self._record_chat_delivery_lost(
+                device_id=device_id,
+                session_key=session_key,
+                run_id=run_id,
+                started_at=started_at,
+                delivery_state="final",
             )
             if idempotency_key:
-                self._idempotency_cache.discard(
+                self._idempotency_cache.complete(
                     device_id=device_id,
                     session_key=session_key,
                     idempotency_key=idempotency_key,
                     run_id=run_id,
+                    final_event=completed_event,
                 )
             return
 
@@ -1397,6 +1400,26 @@ class R1HermesAdapter:
                 run_id=run_id,
                 final_event=completed_event,
             )
+
+    def _record_chat_delivery_lost(
+        self,
+        *,
+        device_id: str,
+        session_key: str,
+        run_id: str,
+        started_at: float,
+        delivery_state: str,
+    ) -> None:
+        audit_log(
+            "info",
+            "chat.run_delivery_lost",
+            device_id_hash=hash_identifier(device_id),
+            session_key_hash=hash_identifier(session_key),
+            run_id_hash=hash_identifier(run_id),
+            delivery_state=delivery_state,
+            reason="websocket_disconnected",
+            duration_ms=_elapsed_ms(started_at),
+        )
 
     async def _send_duplicate_chat_response(
         self,
@@ -1424,6 +1447,11 @@ class R1HermesAdapter:
             session_key_hash=hash_identifier(entry.session_key),
             run_id_hash=hash_identifier(entry.run_id),
         )
+        status = "completed"
+        if entry.final_event is not None:
+            final_state = str(entry.final_event.get("payload", {}).get("state") or "")
+            if final_state == "error":
+                status = "error"
         await ws.send_json(
             {
                 "type": "res",
@@ -1431,7 +1459,7 @@ class R1HermesAdapter:
                 "ok": True,
                 "payload": {
                     "runId": entry.run_id,
-                    "status": "completed",
+                    "status": status,
                     "duplicate": True,
                 },
             }
@@ -1647,9 +1675,9 @@ async def _emit_chat_heartbeats(
 
 
 def _discard_finished_task(
-    tasks: set[asyncio.Task[None]], task: asyncio.Task[None]
+    tasks: dict[asyncio.Task[None], bool], task: asyncio.Task[None]
 ) -> None:
-    tasks.discard(task)
+    tasks.pop(task, None)
     if task.cancelled():
         return
     try:
@@ -1658,15 +1686,32 @@ def _discard_finished_task(
         audit_log("warning", "chat.task_failed", error_type=exc.__class__.__name__)
 
 
-async def _cancel_active_chat_tasks(tasks: set[asyncio.Task[None]]) -> None:
+async def _cancel_active_chat_tasks(tasks: dict[asyncio.Task[None], bool]) -> None:
     if not tasks:
         return
-    pending = [task for task in tasks if not task.done()]
+    pending = [
+        task
+        for task, cancel_on_disconnect in tasks.items()
+        if cancel_on_disconnect and not task.done()
+    ]
     for task in pending:
         task.cancel()
     if pending:
         await asyncio.gather(*pending, return_exceptions=True)
-    tasks.clear()
+
+
+def _chat_task_cancel_on_disconnect(
+    frame: dict[str, Any],
+    *,
+    idempotency_cache_enabled: bool,
+) -> bool:
+    if not idempotency_cache_enabled:
+        return True
+    try:
+        chat_request = parse_chat_send_params(request_params(frame))
+    except PayloadParseError:
+        return True
+    return chat_request.idempotency_key is None
 
 
 def _ws_closed(ws: web.WebSocketResponse) -> bool:

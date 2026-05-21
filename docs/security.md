@@ -132,9 +132,16 @@ Rabbit/OpenClaw clients may retry `chat.send` after a timeout or network hiccup.
 `idempotencyKey` as a per-device and per-`sessionKey` run key and keeps a bounded in-memory cache for
 in-flight and recently completed keys. An in-flight duplicate receives `BUSY_DUPLICATE` before any
 Hermes subprocess or native handler call; a completed duplicate receives a duplicate acknowledgement
-and replay of the cached final chat event. This avoids repeating physical-device commands while
-keeping memory bounded by `R1_HERMES_IDEMPOTENCY_CACHE_MAX_ENTRIES`,
-`R1_HERMES_IDEMPOTENCY_CACHE_TTL_SECONDS`, and the matching server CLI options.
+and replay of the cached final or error chat event. For authenticated sends that already reached
+`chat.run_started`, the gateway keeps the idempotent run alive after a WebSocket disconnect so a
+mobile-network reconnect can observe either the still-active `BUSY_DUPLICATE` state or the cached
+terminal event. If final delivery itself is lost because the socket closed, the computed terminal
+event is cached for the retry window before the handler returns. Parser failures, including
+unsupported media payloads, are not cached and do not invoke Hermes; repeated media-bearing sends
+therefore keep returning the same generic `UNSUPPORTED_MEDIA` response without replaying or logging
+media bytes. This avoids repeating physical-device commands while keeping memory bounded by
+`R1_HERMES_IDEMPOTENCY_CACHE_MAX_ENTRIES`, `R1_HERMES_IDEMPOTENCY_CACHE_TTL_SECONDS`, and the
+matching server CLI options.
 
 The native Gateway prototype in `src/r1_hermes/native_gateway.py` preserves the same preconditions:
 it converts only authenticated `chat.send` text into a gateway-style message event, excludes message

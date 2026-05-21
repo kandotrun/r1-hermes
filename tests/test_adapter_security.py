@@ -101,6 +101,23 @@ class FakeWebSocket:
         self.frames.append(frame)
 
 
+class FinalSendFailingWebSocket(FakeWebSocket):
+    def __init__(self, *, fail_state: str = "final"):
+        super().__init__()
+        self.fail_state = fail_state
+        self.closed = False
+
+    async def send_json(self, frame):
+        if (
+            frame.get("type") == "event"
+            and frame.get("event") == "chat"
+            and frame.get("payload", {}).get("state") == self.fail_state
+        ):
+            self.closed = True
+            raise RuntimeError("websocket closed before final delivery")
+        await super().send_json(frame)
+
+
 class FakeHealthTransport:
     def __init__(self, peername):
         self.peername = peername
@@ -198,6 +215,17 @@ def fixture_with_gateway_token(frame: dict):
 
 
 async def authenticated_ws(base_url: str, *, device_id: str):
+    session, ws, _device_token = await authenticated_ws_with_token(base_url, device_id=device_id)
+    return session, ws
+
+
+async def authenticated_ws_with_token(
+    base_url: str,
+    *,
+    device_id: str,
+    token: str | None = None,
+):
+    token = "gateway-token-for-tests" if token is None else token
     session, ws = await ws_connect(base_url)
     await ws.send_json(
         {
@@ -205,13 +233,14 @@ async def authenticated_ws(base_url: str, *, device_id: str):
             "id": f"connect-{device_id}",
             "method": "connect",
             "params": {
-                "auth": {"token": "gateway-token-for-tests"},
+                "auth": {"token": token},
                 "device": {"id": device_id},
             },
         }
     )
-    assert (await ws.receive_json())["ok"] is True
-    return session, ws
+    hello = await ws.receive_json()
+    assert hello["ok"] is True
+    return session, ws, hello["payload"]["auth"]["deviceToken"]
 
 
 @pytest.mark.asyncio
@@ -286,8 +315,25 @@ async def test_http_healthz_allows_non_local_requests_with_explicit_opt_in(tmp_p
     assert json.loads(response.text) == {"ok": True}
 
 
-async def send_chat(ws, *, rid: str, message: str, session_key: str = "main") -> None:
-    await ws.send_json(chat_frame(rid=rid, message=message, session_key=session_key))
+DEFAULT_IDEMPOTENCY = object()
+
+
+async def send_chat(
+    ws,
+    *,
+    rid: str,
+    message: str,
+    session_key: str = "main",
+    idempotency_key=None,
+) -> None:
+    await ws.send_json(
+        chat_frame(
+            rid=rid,
+            message=message,
+            session_key=session_key,
+            idempotency_key=idempotency_key,
+        )
+    )
 
 
 async def wait_until(predicate, *, timeout: float = 1.0) -> None:
@@ -299,16 +345,26 @@ async def wait_until(predicate, *, timeout: float = 1.0) -> None:
     assert predicate()
 
 
-def chat_frame(*, rid: str, message: str, session_key: str = "main") -> dict:
+def chat_frame(
+    *,
+    rid: str,
+    message: str,
+    session_key: str = "main",
+    idempotency_key=DEFAULT_IDEMPOTENCY,
+) -> dict:
+    params = {
+        "message": message,
+        "sessionKey": session_key,
+    }
+    if idempotency_key is DEFAULT_IDEMPOTENCY:
+        params["idempotencyKey"] = f"run-{rid}"
+    elif idempotency_key is not None:
+        params["idempotencyKey"] = idempotency_key
     return {
         "type": "req",
         "id": rid,
         "method": "chat.send",
-        "params": {
-            "message": message,
-            "sessionKey": session_key,
-            "idempotencyKey": f"run-{rid}",
-        },
+        "params": params,
     }
 
 
@@ -2185,6 +2241,259 @@ async def test_completed_idempotency_key_replays_final_event_without_second_run(
         "payload": {"runId": "run-chat-complete", "status": "completed", "duplicate": True},
     }
     assert duplicate_ws.frames[1] == first_ws.frames[2]
+
+
+@pytest.mark.asyncio
+async def test_completed_idempotency_key_replays_error_event_without_second_run(tmp_path):
+    sink = RaisingHermesSink(ChatRunFailedError())
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    first_ws = FakeWebSocket()
+    duplicate_ws = FakeWebSocket()
+    frame = chat_frame(rid="chat-error-cache", message="run once")
+
+    await adapter._handle_chat_send(first_ws, "chat-error-cache", frame, "r1-error-cache")
+    await adapter._handle_chat_send(
+        duplicate_ws,
+        "chat-error-cache-retry",
+        frame,
+        "r1-error-cache",
+    )
+
+    assert sink.messages == [
+        {"text": "run once", "device_id": "r1-error-cache", "session_key": "main"}
+    ]
+    assert duplicate_ws.frames[0] == {
+        "type": "res",
+        "id": "chat-error-cache-retry",
+        "ok": True,
+        "payload": {"runId": "run-chat-error-cache", "status": "error", "duplicate": True},
+    }
+    assert duplicate_ws.frames[1] == first_ws.frames[2]
+    assert duplicate_ws.frames[1]["payload"]["state"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_lost_final_event_is_cached_for_idempotent_retry_without_second_run(tmp_path):
+    sink = FakeHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    first_ws = FinalSendFailingWebSocket(fail_state="final")
+    duplicate_ws = FakeWebSocket()
+    frame = chat_frame(
+        rid="chat-final-lost",
+        message="run once despite lost final",
+        idempotency_key="mobile-drop-run",
+    )
+
+    await adapter._handle_chat_send(first_ws, "chat-final-lost", frame, "r1-final-lost")
+    await adapter._handle_chat_send(
+        duplicate_ws,
+        "chat-final-lost-retry",
+        frame,
+        "r1-final-lost",
+    )
+
+    delivered_states = [
+        sent["payload"].get("state") for sent in first_ws.frames if sent["type"] == "event"
+    ]
+    assert delivered_states == ["started"]
+    assert sink.messages == [
+        {
+            "text": "run once despite lost final",
+            "device_id": "r1-final-lost",
+            "session_key": "main",
+        }
+    ]
+    assert duplicate_ws.frames[0] == {
+        "type": "res",
+        "id": "chat-final-lost-retry",
+        "ok": True,
+        "payload": {"runId": "mobile-drop-run", "status": "completed", "duplicate": True},
+    }
+    assert duplicate_ws.frames[1]["payload"]["state"] == "final"
+    assert duplicate_ws.frames[1]["payload"]["message"]["content"][0]["text"] == (
+        "echo: run once despite lost final"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconnect_after_run_started_replays_cached_final_without_second_run(
+    unused_tcp_port,
+    tmp_path,
+):
+    sink = BlockingHermesSink()
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            max_message_chars=256,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    await adapter.start()
+    first_session = None
+    second_session = None
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        first_session, first_ws, device_token = await authenticated_ws_with_token(
+            base_url,
+            device_id="r1-reconnect",
+        )
+        await send_chat(
+            first_ws,
+            rid="chat-mobile-drop",
+            message="finish once after reconnect",
+            idempotency_key="mobile-run-1",
+        )
+        assert (await first_ws.receive_json())["ok"] is True
+        assert (await first_ws.receive_json())["payload"]["state"] == "started"
+        await sink.wait_for_calls(1)
+
+        await first_ws.close()
+        await first_session.close()
+        first_session = None
+
+        second_session, second_ws, _ = await authenticated_ws_with_token(
+            base_url,
+            device_id="r1-reconnect",
+            token=device_token,
+        )
+        await send_chat(
+            second_ws,
+            rid="chat-mobile-drop-retry-active",
+            message="finish once after reconnect",
+            idempotency_key="mobile-run-1",
+        )
+        duplicate_busy = await second_ws.receive_json()
+        assert duplicate_busy == {
+            "type": "res",
+            "id": "chat-mobile-drop-retry-active",
+            "ok": False,
+            "error": {
+                "code": "BUSY_DUPLICATE",
+                "message": "duplicate request is already running",
+            },
+        }
+        assert sink.messages == [
+            {
+                "text": "finish once after reconnect",
+                "device_id": "r1-reconnect",
+                "session_key": "main",
+            }
+        ]
+
+        sink.release.set()
+        await wait_until(
+            lambda: any(
+                entry.state == "completed" and entry.run_id == "mobile-run-1"
+                for entry in adapter._idempotency_cache._entries.values()
+            )
+        )
+
+        await send_chat(
+            second_ws,
+            rid="chat-mobile-drop-retry-final",
+            message="finish once after reconnect",
+            idempotency_key="mobile-run-1",
+        )
+        duplicate_ack = await second_ws.receive_json()
+        duplicate_final = await second_ws.receive_json()
+
+        assert duplicate_ack == {
+            "type": "res",
+            "id": "chat-mobile-drop-retry-final",
+            "ok": True,
+            "payload": {"runId": "mobile-run-1", "status": "completed", "duplicate": True},
+        }
+        assert duplicate_final["payload"]["state"] == "final"
+        assert duplicate_final["payload"]["message"]["content"][0]["text"] == (
+            "released: finish once after reconnect"
+        )
+        assert sink.messages == [
+            {
+                "text": "finish once after reconnect",
+                "device_id": "r1-reconnect",
+                "session_key": "main",
+            }
+        ]
+    finally:
+        sink.release.set()
+        if first_session is not None:
+            await first_session.close()
+        if second_session is not None:
+            await second_ws.close()
+            await second_session.close()
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_repeated_media_send_replays_cached_result_without_second_agent_run_or_leakage(
+    tmp_path,
+):
+    sink = AttachmentAwareHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    frame = load_fixture("chat_send_media_only_image_content.json")
+    first_ws = FakeWebSocket()
+    duplicate_ws = FakeWebSocket()
+
+    await adapter._handle_chat_send(first_ws, "media-repeat-1", frame, "r1-media-repeat")
+    await adapter._handle_chat_send(duplicate_ws, "media-repeat-2", frame, "r1-media-repeat")
+
+    serialized = json.dumps(first_ws.frames + duplicate_ws.frames)
+    assert first_ws.frames[0] == {
+        "type": "res",
+        "id": "media-repeat-1",
+        "ok": True,
+        "payload": {"runId": "media-only-run-001", "status": "started"},
+    }
+    assert first_ws.frames[1]["payload"]["state"] == "started"
+    assert first_ws.frames[2]["payload"]["state"] == "final"
+    assert duplicate_ws.frames[0] == {
+        "type": "res",
+        "id": "media-repeat-2",
+        "ok": True,
+        "payload": {"runId": "media-only-run-001", "status": "completed", "duplicate": True},
+    }
+    assert duplicate_ws.frames[1] == first_ws.frames[2]
+    assert len(sink.calls) == 1
+    assert sink.calls[0]["text"] == ""
+    assert sink.calls[0]["device_id"] == "r1-media-repeat"
+    assert sink.calls[0]["session_key"] == "media-main"
+    assert len(sink.calls[0]["attachments"]) == 1
+    assert "DUMMY_BINARY_DATA_OMITTED" not in serialized
+    assert "cjEtaW1hZ2U=" not in serialized
 
 
 @pytest.mark.asyncio
