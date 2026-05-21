@@ -325,6 +325,21 @@ This project does not implement unauthenticated pairing, browser admin pairing, 
 forwarding, binary capture replay, or non-chat Rabbit services. Unsupported methods continue to
 receive a generic `UNKNOWN_METHOD` response after authentication.
 
+## Media upload lifecycle
+
+Authenticated image attachments are still untrusted input. The gateway accepts only inline base64
+PNG, JPEG, or WebP image content after MIME sniffing confirms the declared type and filename
+extension. Accepted files are stored under `<state-dir>/uploads/`, with the state and upload
+directories forced to `0700` and each media file written as `0600`. Oversized media is rejected by
+`R1_HERMES_MEDIA_MAX_FILE_BYTES` before Hermes is invoked, and unsupported media returns a generic
+`UNSUPPORTED_MEDIA` response without echoing media bytes.
+
+Hermes receives image context only as `MEDIA:/absolute/path` lines in the prompt. The files are
+deleted after the run finishes or is cancelled, and stale private uploads are pruned by
+`R1_HERMES_MEDIA_TTL_SECONDS` before new uploads are written. Keep this directory inside the private
+state boundary; do not point it at shared folders, public web roots, synced directories, or paths
+that another local user can read.
+
 ## QR lifecycle
 
 QR PNGs are bearer-secret material because the payload contains the gateway token. Generate them on

@@ -325,7 +325,7 @@ def _content_to_text_and_attachments(
                 continue
             _raise_unsupported_media()
 
-    text = "".join(parts).strip()
+    text = " ".join(part.strip() for part in parts if part.strip()).strip()
     return text or None, tuple(attachments)
 
 

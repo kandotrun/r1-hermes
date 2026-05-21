@@ -25,6 +25,13 @@ from aiohttp import WSMsgType, web
 from .audit import audit_log, hash_identifier
 from .chat_errors import ChatRunError, ChatRunTimeoutError
 from .frame_shape import build_frame_shape_log_fields
+from .media import (
+    DEFAULT_MEDIA_MAX_BYTES,
+    DEFAULT_MEDIA_TTL_SECONDS,
+    MediaUploadError,
+    MediaUploadStore,
+    StoredMediaFile,
+)
 from .payloads import (
     ImageAttachment,
     PayloadParseError,
@@ -87,6 +94,8 @@ class R1HermesConfig:
     idempotency_cache_ttl_seconds: int = DEFAULT_IDEMPOTENCY_CACHE_TTL_SECONDS
     chat_run_timeout_seconds: float = DEFAULT_CHAT_RUN_TIMEOUT_SECONDS
     chat_heartbeat_interval_seconds: float = DEFAULT_CHAT_HEARTBEAT_INTERVAL_SECONDS
+    media_max_file_bytes: int = DEFAULT_MEDIA_MAX_BYTES
+    media_ttl_seconds: int = DEFAULT_MEDIA_TTL_SECONDS
     allow_remote_health: bool = False
     health_diagnostics: bool = False
     tls_cert_file: Path | None = None
@@ -121,6 +130,8 @@ class R1HermesConfig:
         idempotency_cache_ttl_seconds: int | None = None,
         chat_run_timeout_seconds: float | None = None,
         chat_heartbeat_interval_seconds: float | None = None,
+        media_max_file_bytes: int | None = None,
+        media_ttl_seconds: int | None = None,
         allow_remote_health: bool | None = None,
         health_diagnostics: bool | None = None,
         tls_cert_file: Path | None = None,
@@ -236,6 +247,16 @@ class R1HermesConfig:
                     "R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS",
                     str(DEFAULT_CHAT_HEARTBEAT_INTERVAL_SECONDS),
                 )
+            ),
+            media_max_file_bytes=int(
+                media_max_file_bytes
+                if media_max_file_bytes is not None
+                else os.environ.get("R1_HERMES_MEDIA_MAX_FILE_BYTES", str(DEFAULT_MEDIA_MAX_BYTES))
+            ),
+            media_ttl_seconds=int(
+                media_ttl_seconds
+                if media_ttl_seconds is not None
+                else os.environ.get("R1_HERMES_MEDIA_TTL_SECONDS", str(DEFAULT_MEDIA_TTL_SECONDS))
             ),
             allow_remote_health=(
                 _env_flag("R1_HERMES_ALLOW_REMOTE_HEALTH")
@@ -745,6 +766,11 @@ class R1HermesAdapter:
             max_entries=config.idempotency_cache_max_entries,
             ttl_seconds=config.idempotency_cache_ttl_seconds,
         )
+        self.media_store = MediaUploadStore(
+            config.state_dir,
+            max_file_bytes=config.media_max_file_bytes,
+            ttl_seconds=config.media_ttl_seconds,
+        )
 
     async def start(self) -> None:
         self._app = web.Application()
@@ -782,7 +808,10 @@ class R1HermesAdapter:
             raise web.HTTPNotFound()
 
         peer_key = _peer_key(request)
-        ws = web.WebSocketResponse(heartbeat=20, max_msg_size=self.config.max_message_chars * 4)
+        ws = web.WebSocketResponse(
+            heartbeat=20,
+            max_msg_size=_websocket_max_message_size(self.config),
+        )
         await ws.prepare(request)
         if not self._unauthenticated_limiter.allow_connection(peer_key):
             audit_log(
@@ -1123,6 +1152,20 @@ class R1HermesAdapter:
             )
             await _send_error(ws, rid, "MESSAGE_TOO_LARGE", "message exceeds limit")
             return
+        stored_media: tuple[StoredMediaFile, ...] = ()
+        try:
+            stored_media = self.media_store.store_all(chat_request.attachments)
+        except MediaUploadError as exc:
+            audit_log(
+                "warning",
+                "chat.media_rejected",
+                error_code=exc.code,
+                device_id_hash=hash_identifier(device_id),
+                attachments=len(chat_request.attachments),
+            )
+            await _send_error(ws, rid, exc.code, exc.message)
+            return
+        handler_text = _compose_hermes_prompt(message_text, stored_media)
 
         run_id = str(chat_request.idempotency_key or rid or secrets.token_hex(8))
         session_key = chat_request.session_key
@@ -1163,9 +1206,11 @@ class R1HermesAdapter:
                         run_id=run_id,
                     )
         if duplicate_entry is not None:
+            self.media_store.remove(*(item.path for item in stored_media))
             await self._send_duplicate_chat_response(ws, rid, duplicate_entry, device_id=device_id)
             return
         if rate_limited:
+            self.media_store.remove(*(item.path for item in stored_media))
             audit_log(
                 "warning",
                 "rate_limited",
@@ -1178,6 +1223,7 @@ class R1HermesAdapter:
             await _send_error(ws, rid, "RATE_LIMITED", "too many messages")
             return
         if busy:
+            self.media_store.remove(*(item.path for item in stored_media))
             audit_log(
                 "warning",
                 "busy_rejected",
@@ -1257,6 +1303,7 @@ class R1HermesAdapter:
                 run_id_hash=hash_identifier(run_id),
                 message_chars=len(message_text),
                 **_attachment_audit_fields(attachments),
+                media_files=len(stored_media),
             )
             heartbeat_task = asyncio.create_task(
                 _emit_chat_heartbeats(
@@ -1278,7 +1325,7 @@ class R1HermesAdapter:
                 if attachments:
                     handler_kwargs["attachments"] = attachments
                 response = await asyncio.wait_for(
-                    self.message_handler(message_text, **handler_kwargs),
+                    self.message_handler(handler_text, **handler_kwargs),
                     timeout=self.config.chat_run_timeout_seconds,
                 )
             except asyncio.CancelledError:
@@ -1298,6 +1345,7 @@ class R1HermesAdapter:
             except Exception:  # pragma: no cover - defensive boundary
                 error = ChatRunError()
         finally:
+            self.media_store.remove(*(item.path for item in stored_media))
             if heartbeat_task is not None:
                 heartbeat_task.cancel()
                 await asyncio.gather(heartbeat_task, return_exceptions=True)
@@ -1388,7 +1436,7 @@ class R1HermesAdapter:
             device_id_hash=hash_identifier(device_id),
             session_key_hash=hash_identifier(session_key),
             run_id_hash=hash_identifier(run_id),
-            attachment_count=len(attachments),
+            **_attachment_audit_fields(attachments),
             response_chars=len(str(response or "")),
             duration_ms=_elapsed_ms(started_at),
         )
@@ -1502,6 +1550,25 @@ def _validate_config(config: R1HermesConfig) -> None:
         raise ValueError("chat_run_timeout_seconds must be greater than 0")
     if config.chat_heartbeat_interval_seconds <= 0:
         raise ValueError("chat_heartbeat_interval_seconds must be greater than 0")
+    if config.media_max_file_bytes < 1:
+        raise ValueError("media_max_file_bytes must be at least 1")
+    if config.media_ttl_seconds < 1:
+        raise ValueError("media_ttl_seconds must be at least 1")
+
+
+def _websocket_max_message_size(config: R1HermesConfig) -> int:
+    media_budget = max(0, config.media_max_file_bytes * 2)
+    return max(config.max_message_chars * 4, media_budget)
+
+
+def _compose_hermes_prompt(text: str, media_files: tuple[StoredMediaFile, ...]) -> str:
+    media_lines = [f"MEDIA:{media.path}" for media in media_files]
+    prompt = text.strip()
+    if media_lines and prompt:
+        return "\n".join(media_lines) + "\n\n" + prompt
+    if media_lines:
+        return "\n".join(media_lines)
+    return text
 
 
 def _allowed_device_ids_from_env() -> frozenset[str] | None:

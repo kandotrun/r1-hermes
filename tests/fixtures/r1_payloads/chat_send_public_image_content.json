@@ -1,0 +1,24 @@
+{
+  "type": "req",
+  "id": "chat-public-image-001",
+  "method": "chat.send",
+  "params": {
+    "content": [
+      {
+        "type": "input_text",
+        "text": "describe the sanitized image"
+      },
+      {
+        "type": "input_image",
+        "mediaType": "image/png",
+        "filename": "public-test-image.png",
+        "data": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+      }
+    ],
+    "sessionKey": "media-main",
+    "requestId": "public-image-run-001",
+    "auth": {
+      "deviceToken": "DUMMY_DEVICE_TOKEN_DO_NOT_USE"
+    }
+  }
+}

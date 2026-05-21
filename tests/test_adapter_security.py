@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -12,9 +13,15 @@ from aiohttp import ClientSession, WSMsgType, web
 from r1_hermes import adapter as adapter_module
 from r1_hermes.adapter import DeviceState, R1HermesAdapter, R1HermesConfig
 from r1_hermes.chat_errors import ChatRunFailedError
+from r1_hermes.media import MediaUploadStore
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "r1_payloads"
 WILDCARD_IPV4 = ".".join(("0", "0", "0", "0"))
+PNG_1X1_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/"
+    "p9sAAAAASUVORK5CYII="
+)
+PNG_1X1_BYTES = base64.b64decode(PNG_1X1_BASE64)
 
 
 class FakeHermesSink:
@@ -90,6 +97,60 @@ class CancellableBlockingHermesSink(BlockingHermesSink):
         except asyncio.CancelledError:
             self.cancelled.set()
             raise
+
+
+class InspectingMediaSink:
+    def __init__(self):
+        self.messages = []
+        self.media_path: Path | None = None
+        self.media_mode: int | None = None
+        self.upload_dir_mode: int | None = None
+        self.media_prefix = b""
+
+    async def __call__(
+        self, text: str, *, device_id: str, session_key: str, attachments=()
+    ) -> str:
+        media_lines = [line for line in text.splitlines() if line.startswith("MEDIA:")]
+        assert len(media_lines) == 1
+        path = Path(media_lines[0].removeprefix("MEDIA:"))
+        assert path.is_absolute()
+        assert path.exists()
+
+        self.media_path = path
+        self.media_mode = stat.S_IMODE(path.stat().st_mode)
+        self.upload_dir_mode = stat.S_IMODE(path.parent.stat().st_mode)
+        self.media_prefix = path.read_bytes()[:8]
+        self.messages.append({"text": text, "device_id": device_id, "session_key": session_key})
+        return "vision ok"
+
+
+class BlockingMediaSink(InspectingMediaSink):
+    def __init__(self):
+        super().__init__()
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __call__(
+        self, text: str, *, device_id: str, session_key: str, attachments=()
+    ) -> str:
+        media_lines = [line for line in text.splitlines() if line.startswith("MEDIA:")]
+        assert len(media_lines) == 1
+        path = Path(media_lines[0].removeprefix("MEDIA:"))
+        assert path.exists()
+
+        self.media_path = path
+        self.media_mode = stat.S_IMODE(path.stat().st_mode)
+        self.upload_dir_mode = stat.S_IMODE(path.parent.stat().st_mode)
+        self.media_prefix = path.read_bytes()[:8]
+        self.messages.append({"text": text, "device_id": device_id, "session_key": session_key})
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        return "vision ok"
 
 
 class FakeWebSocket:
@@ -365,6 +426,37 @@ def chat_frame(
         "id": rid,
         "method": "chat.send",
         "params": params,
+    }
+
+
+def image_chat_frame(
+    *,
+    rid: str = "chat-image",
+    prompt: str = "please describe this image",
+    image_data: str = PNG_1X1_BASE64,
+    media_type: str = "image/png",
+    filename: str = "capture.png",
+    idempotency_key: str = "run-image",
+) -> dict:
+    return {
+        "type": "req",
+        "id": rid,
+        "method": "chat.send",
+        "params": {
+            "message": {
+                "content": [
+                    {"type": "input_text", "text": prompt},
+                    {
+                        "type": "input_image",
+                        "mediaType": media_type,
+                        "filename": filename,
+                        "data": image_data,
+                    },
+                ]
+            },
+            "sessionKey": "vision-main",
+            "idempotencyKey": idempotency_key,
+        },
     }
 
 
@@ -1040,7 +1132,7 @@ async def test_unsupported_media_chat_send_returns_safe_error_without_agent_run_
 
 
 @pytest.mark.asyncio
-async def test_camera_image_chat_send_runs_attachment_aware_handler_without_media_log_leakage(
+async def test_camera_image_chat_send_uses_media_prompt_without_media_log_leakage(
     unused_tcp_port,
     tmp_path,
     caplog,
@@ -1074,7 +1166,7 @@ async def test_camera_image_chat_send_runs_attachment_aware_handler_without_medi
         hello = await ws.receive_json()
         device_token = hello["payload"]["auth"]["deviceToken"]
 
-        frame = load_fixture("chat_send_media_only_image_content.json")
+        frame = load_fixture("chat_send_public_image_content.json")
         await ws.send_json(frame)
         ack = await ws.receive_json()
         started = await ws.receive_json()
@@ -1087,18 +1179,23 @@ async def test_camera_image_chat_send_runs_attachment_aware_handler_without_medi
         assert final["payload"]["message"]["content"][0]["text"] == "vision attachments: 1"
         assert len(sink.calls) == 1
         call = sink.calls[0]
-        assert call["text"] == ""
+        assert call["text"].endswith("\n\ndescribe the sanitized image")
+        media_line = call["text"].splitlines()[0]
+        assert media_line.startswith("MEDIA:")
+        media_path = Path(media_line.removeprefix("MEDIA:"))
+        assert media_path.is_absolute()
+        assert media_path.exists() is False
         assert call["device_id"] == "r1-camera-image"
         assert call["session_key"] == "media-main"
         assert len(call["attachments"]) == 1
         attachment = call["attachments"][0]
-        assert attachment.mime_type == "image/jpeg"
+        assert attachment.mime_type == "image/png"
         assert attachment.source_field == "content.data"
-        assert attachment.filename == "r1-camera.jpg"
-        assert attachment.extension == "jpg"
-        assert attachment.size_bytes == len(b"r1-image")
+        assert attachment.filename == "public-test-image.png"
+        assert attachment.extension == "png"
+        assert attachment.size_bytes == len(PNG_1X1_BYTES)
         assert attachment.content_hash.startswith("sha256:")
-        assert "cjEtaW1hZ2U=" not in repr(attachment)
+        assert PNG_1X1_BASE64 not in repr(attachment)
         assert "data:image" not in repr(attachment)
 
         started_event = next(
@@ -1108,12 +1205,13 @@ async def test_camera_image_chat_send_runs_attachment_aware_handler_without_medi
             event for event in audit_events(caplog) if event["event"] == "chat.run_final"
         )
         assert started_event["attachment_count"] == 1
-        assert started_event["attachment_sizes"] == [len(b"r1-image")]
-        assert started_event["attachment_mime_types"] == ["image/jpeg"]
+        assert started_event["attachment_sizes"] == [len(PNG_1X1_BYTES)]
+        assert started_event["attachment_mime_types"] == ["image/png"]
         assert started_event["attachment_hashes"] == [attachment.content_hash]
+        assert started_event["media_files"] == 1
         assert final_event["attachment_count"] == 1
-        assert "cjEtaW1hZ2U=" not in serialized_response
-        assert "cjEtaW1hZ2U=" not in logs
+        assert PNG_1X1_BASE64 not in serialized_response
+        assert PNG_1X1_BASE64 not in logs
         assert "data:image" not in serialized_response
         assert "data:image" not in logs
         assert "DUMMY_DEVICE_TOKEN_DO_NOT_USE" not in serialized_response
@@ -1124,6 +1222,225 @@ async def test_camera_image_chat_send_runs_attachment_aware_handler_without_medi
         await ws.close()
         await session.close()
         await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_accepted_image_attachment_is_stored_privately_and_passed_to_hermes(tmp_path):
+    sink = InspectingMediaSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            max_message_chars=128,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    ws = FakeWebSocket()
+
+    await adapter._handle_chat_send(ws, "chat-image", image_chat_frame(), "r1-vision")
+
+    assert ws.frames[0]["ok"] is True
+    assert ws.frames[1]["payload"]["state"] == "started"
+    assert ws.frames[2]["payload"]["state"] == "final"
+    assert sink.media_path is not None
+    assert sink.media_path.exists() is False
+    assert sink.media_path.parent == tmp_path / "uploads"
+    assert sink.media_mode == 0o600
+    assert sink.upload_dir_mode == 0o700
+    assert sink.media_prefix == PNG_1X1_BYTES[:8]
+    assert sink.messages == [
+        {
+            "text": f"MEDIA:{sink.media_path}\n\nplease describe this image",
+            "device_id": "r1-vision",
+            "session_key": "vision-main",
+        }
+    ]
+    assert list((tmp_path / "uploads").glob("*")) == []
+
+
+@pytest.mark.asyncio
+async def test_sanitized_image_fixture_invocation_includes_media_path_and_prompt(tmp_path):
+    sink = InspectingMediaSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            max_message_chars=128,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    fixture = load_fixture("chat_send_public_image_content.json")
+
+    await adapter._handle_chat_send(FakeWebSocket(), fixture["id"], fixture, "r1-fixture-vision")
+
+    assert sink.media_path is not None
+    assert sink.messages == [
+        {
+            "text": f"MEDIA:{sink.media_path}\n\ndescribe the sanitized image",
+            "device_id": "r1-fixture-vision",
+            "session_key": "media-main",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_oversized_image_is_rejected_before_hermes_invocation(tmp_path):
+    sink = FakeHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            max_message_chars=128,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    adapter.media_store = MediaUploadStore(tmp_path, max_file_bytes=len(PNG_1X1_BYTES) - 1)
+    ws = FakeWebSocket()
+
+    await adapter._handle_chat_send(ws, "chat-oversized", image_chat_frame(), "r1-oversized")
+
+    assert ws.frames == [
+        {
+            "type": "res",
+            "id": "chat-oversized",
+            "ok": False,
+            "error": {"code": "MEDIA_TOO_LARGE", "message": "media file exceeds limit"},
+        }
+    ]
+    assert sink.messages == []
+    assert list((tmp_path / "uploads").glob("*")) == []
+
+
+@pytest.mark.asyncio
+async def test_unsupported_image_type_is_rejected_before_hermes_invocation(tmp_path):
+    sink = FakeHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            max_message_chars=128,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    frame = image_chat_frame(
+        image_data=base64.b64encode(b"GIF89a\x01\x00\x01\x00\x00\x00").decode("ascii"),
+        media_type="image/gif",
+        filename="capture.gif",
+        idempotency_key="run-gif",
+    )
+    ws = FakeWebSocket()
+
+    await adapter._handle_chat_send(ws, "chat-gif", frame, "r1-gif")
+
+    assert ws.frames == [
+        {
+            "type": "res",
+            "id": "chat-gif",
+            "ok": False,
+            "error": {"code": "UNSUPPORTED_MEDIA", "message": "unsupported media content"},
+        }
+    ]
+    assert sink.messages == []
+    assert list((tmp_path / "uploads").glob("*")) == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_image_chat_removes_private_upload_file(tmp_path):
+    sink = BlockingMediaSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            max_message_chars=128,
+            per_device_concurrency=1,
+            global_concurrency=1,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    task = asyncio.create_task(
+        adapter._handle_chat_send(
+            FakeWebSocket(),
+            "chat-cancel-image",
+            image_chat_frame(),
+            "r1-cancel-image",
+        )
+    )
+    await asyncio.wait_for(sink.started.wait(), timeout=1)
+    assert sink.media_path is not None
+    assert sink.media_path.exists()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert sink.cancelled.is_set()
+    assert sink.media_path.exists() is False
+    assert list((tmp_path / "uploads").glob("*")) == []
+
+
+@pytest.mark.asyncio
+async def test_duplicate_image_idempotency_key_removes_unused_private_upload_file(tmp_path):
+    sink = BlockingMediaSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            max_message_chars=128,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    first_task = asyncio.create_task(
+        adapter._handle_chat_send(
+            FakeWebSocket(),
+            "chat-image-duplicate",
+            image_chat_frame(),
+            "r1-image-duplicate",
+        )
+    )
+    await asyncio.wait_for(sink.started.wait(), timeout=1)
+    assert sink.media_path is not None
+    assert sink.media_path.exists()
+
+    duplicate_ws = FakeWebSocket()
+    await adapter._handle_chat_send(
+        duplicate_ws,
+        "chat-image-duplicate-retry",
+        image_chat_frame(),
+        "r1-image-duplicate",
+    )
+
+    assert duplicate_ws.frames == [
+        {
+            "type": "res",
+            "id": "chat-image-duplicate-retry",
+            "ok": False,
+            "error": {
+                "code": "BUSY_DUPLICATE",
+                "message": "duplicate request is already running",
+            },
+        }
+    ]
+    assert list((tmp_path / "uploads").glob("*")) == [sink.media_path]
+
+    sink.release.set()
+    await first_task
+    assert list((tmp_path / "uploads").glob("*")) == []
 
 
 @pytest.mark.asyncio
@@ -2464,7 +2781,7 @@ async def test_repeated_media_send_replays_cached_result_without_second_agent_ru
         ),
         message_handler=sink,
     )
-    frame = load_fixture("chat_send_media_only_image_content.json")
+    frame = load_fixture("chat_send_public_image_content.json")
     first_ws = FakeWebSocket()
     duplicate_ws = FakeWebSocket()
 
@@ -2476,7 +2793,7 @@ async def test_repeated_media_send_replays_cached_result_without_second_agent_ru
         "type": "res",
         "id": "media-repeat-1",
         "ok": True,
-        "payload": {"runId": "media-only-run-001", "status": "started"},
+        "payload": {"runId": "public-image-run-001", "status": "started"},
     }
     assert first_ws.frames[1]["payload"]["state"] == "started"
     assert first_ws.frames[2]["payload"]["state"] == "final"
@@ -2484,16 +2801,23 @@ async def test_repeated_media_send_replays_cached_result_without_second_agent_ru
         "type": "res",
         "id": "media-repeat-2",
         "ok": True,
-        "payload": {"runId": "media-only-run-001", "status": "completed", "duplicate": True},
+        "payload": {"runId": "public-image-run-001", "status": "completed", "duplicate": True},
     }
     assert duplicate_ws.frames[1] == first_ws.frames[2]
     assert len(sink.calls) == 1
-    assert sink.calls[0]["text"] == ""
+    assert sink.calls[0]["text"].endswith("\n\ndescribe the sanitized image")
+    media_line = sink.calls[0]["text"].splitlines()[0]
+    assert media_line.startswith("MEDIA:")
+    media_path = Path(media_line.removeprefix("MEDIA:"))
+    assert media_path.is_absolute()
+    assert media_path.exists() is False
     assert sink.calls[0]["device_id"] == "r1-media-repeat"
     assert sink.calls[0]["session_key"] == "media-main"
     assert len(sink.calls[0]["attachments"]) == 1
     assert "DUMMY_BINARY_DATA_OMITTED" not in serialized
     assert "cjEtaW1hZ2U=" not in serialized
+    assert PNG_1X1_BASE64 not in serialized
+    assert "data:image" not in serialized
 
 
 @pytest.mark.asyncio

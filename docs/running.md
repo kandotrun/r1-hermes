@@ -406,20 +406,21 @@ r1-hermes probe \
   --message 'Reply with OK from Hermes'
 ```
 
-### Text-only chat scope
+### Media chat scope
 
-The standalone bridge accepts authenticated text `chat.send` requests only. Plain text fields and
-text content parts such as `{"type":"text","text":"..."}` or `{"type":"input_text",...}`
-are normalized into the Hermes prompt. Audio, image, video, file, attachment, binary, base64, URL,
-and mixed text-plus-media content parts are rejected with the deterministic `UNSUPPORTED_MEDIA`
-response before Hermes is invoked. This fail-closed behavior avoids silently dropping Rabbit R1
-voice/image context and avoids leaking media bytes through errors, audit logs, or probe frame dumps.
+The standalone bridge accepts authenticated text plus image `chat.send` requests. Plain text fields
+and text content parts such as `{"type":"text","text":"..."}` or `{"type":"input_text",...}`
+are normalized into the Hermes prompt. Accepted PNG, JPEG, and WebP image parts are base64 decoded,
+MIME-sniffed, capped by `R1_HERMES_MEDIA_MAX_FILE_BYTES` (default 10 MiB), and written under
+`<state-dir>/uploads/` with owner-only directory and file permissions. Hermes receives each image as
+`MEDIA:/absolute/path` followed by the user's text so the existing Vision path can consume it.
 
-Future STT/media support should add an explicit adapter stage before prompt construction: authenticate
-the device, validate media type and size, redact local diagnostics, run the approved speech or media
-processor, then pass only the derived text or safe attachment metadata to Hermes. Do not commit raw
-Rabbit R1 audio/image captures; use sanitized fixtures with dummy placeholder strings when adding
-parser coverage.
+Uploaded image files are removed after the Hermes run finishes or is cancelled, and stale files are
+pruned by `R1_HERMES_MEDIA_TTL_SECONDS` (default 15 minutes) before new uploads are accepted. Audio,
+video, non-image files, remote media URLs, unsupported extensions, oversized media, and malformed
+base64 are rejected before Hermes is invoked. Media bytes and full prompts are not written to audit
+logs or probe frame dumps. Do not commit raw Rabbit R1 audio/image captures; use sanitized fixtures
+with dummy placeholder strings or tiny public test images when adding parser coverage.
 
 ## Audit logs
 

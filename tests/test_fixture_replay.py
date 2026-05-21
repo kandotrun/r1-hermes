@@ -189,7 +189,52 @@ async def test_media_fixture_flows_return_unsupported_media_without_secret_leaka
 
 
 @pytest.mark.asyncio
-async def test_camera_image_fixture_flow_replays_as_attachment_without_secret_leakage(
+async def test_public_image_fixture_flow_passes_media_path_and_prompt_to_hermes(
+    replay_gateway,
+):
+    url, sink = replay_gateway
+
+    result = await replay_fixture_flow(
+        url=url,
+        fixture_dir=FIXTURE_DIR,
+        flow=FixtureReplayFlow(
+            connect_fixture="connect_official_helper.json",
+            chat_fixture="chat_send_public_image_content.json",
+            expected_device_id="r1-official-helper",
+            expected_message="describe the sanitized image",
+            expected_session_key="media-main",
+            expected_run_id="public-image-run-001",
+        ),
+        gateway_token=TEST_GATEWAY_TOKEN,
+    )
+
+    assert result.run_id == "public-image-run-001"
+    assert len(sink.messages) == 1
+    message = sink.messages[0]
+    assert message["device_id"] == "r1-official-helper"
+    assert message["session_key"] == "media-main"
+    assert message["text"].endswith("\n\ndescribe the sanitized image")
+    media_line = message["text"].splitlines()[0]
+    assert media_line.startswith("MEDIA:")
+    media_path = Path(media_line.removeprefix("MEDIA:"))
+    assert media_path.is_absolute()
+    assert media_path.exists() is False
+    assert len(message["attachments"]) == 1
+    attachment = message["attachments"][0]
+    assert attachment.mime_type == "image/png"
+    assert attachment.filename == "public-test-image.png"
+    assert attachment.content_hash.startswith("sha256:")
+    assert result.response_text is not None
+    assert result.response_text.startswith("fixture echo: r1-official-helper/media-main: MEDIA:")
+    assert result.response_text.endswith("\n\ndescribe the sanitized image (1 attachments)")
+    assert TEST_GATEWAY_TOKEN not in result.serialized_frames
+    assert DUMMY_GATEWAY_TOKEN not in result.serialized_frames
+    assert DUMMY_DEVICE_TOKEN not in result.serialized_frames
+    assert result.device_token not in result.serialized_frames
+
+
+@pytest.mark.asyncio
+async def test_camera_image_placeholder_fixture_rejects_before_agent_without_secret_leakage(
     replay_gateway,
 ):
     url, sink = replay_gateway
@@ -201,25 +246,20 @@ async def test_camera_image_fixture_flow_replays_as_attachment_without_secret_le
             connect_fixture="connect_official_helper.json",
             chat_fixture="chat_send_media_only_image_content.json",
             expected_device_id="r1-official-helper",
-            expected_message="",
+            expected_message=None,
             expected_session_key="media-main",
-            expected_run_id="media-only-run-001",
+            expected_run_id="",
+            expected_error_code="UNSUPPORTED_MEDIA",
+            expected_error_message="unsupported media content",
         ),
         gateway_token=TEST_GATEWAY_TOKEN,
     )
 
-    assert result.response_text == "fixture echo: r1-official-helper/media-main:  (1 attachments)"
-    assert result.run_id == "media-only-run-001"
-    assert len(sink.messages) == 1
-    message = sink.messages[0]
-    assert message["text"] == ""
-    assert message["device_id"] == "r1-official-helper"
-    assert message["session_key"] == "media-main"
-    assert len(message["attachments"]) == 1
-    attachment = message["attachments"][0]
-    assert attachment.mime_type == "image/jpeg"
-    assert attachment.size_bytes == len(b"r1-image")
-    assert attachment.content_hash.startswith("sha256:")
+    assert result.response_text is None
+    assert result.run_id is None
+    assert result.error_code == "UNSUPPORTED_MEDIA"
+    assert result.error_message == "unsupported media content"
+    assert sink.messages == []
     assert "cjEtaW1hZ2U=" not in repr(result)
     assert "cjEtaW1hZ2U=" not in result.serialized_frames
     assert "data:image" not in result.serialized_frames
@@ -252,21 +292,25 @@ async def test_real_device_camera_media_flow_fixture_replays_as_attachment_witho
         gateway_token=TEST_GATEWAY_TOKEN,
     )
 
-    assert result.response_text == (
-        "fixture echo: r1-camera-flow/camera-main: "
-        "describe the sanitized camera image (1 attachments)"
-    )
     assert result.run_id == "camera-run-001"
     assert len(sink.messages) == 1
     message = sink.messages[0]
-    assert message["text"] == "describe the sanitized camera image"
+    assert message["text"].endswith("\n\ndescribe the sanitized camera image")
+    media_line = message["text"].splitlines()[0]
+    assert media_line.startswith("MEDIA:")
+    media_path = Path(media_line.removeprefix("MEDIA:"))
+    assert media_path.is_absolute()
+    assert media_path.exists() is False
     assert message["device_id"] == "r1-camera-flow"
     assert message["session_key"] == "camera-main"
     assert len(message["attachments"]) == 1
     attachment = message["attachments"][0]
-    assert attachment.mime_type == "image/jpeg"
-    assert attachment.size_bytes == len(b"r1-image")
+    assert attachment.mime_type == "image/png"
+    assert attachment.filename == "r1-camera.png"
     assert attachment.content_hash.startswith("sha256:")
+    assert result.response_text is not None
+    assert result.response_text.startswith("fixture echo: r1-camera-flow/camera-main: MEDIA:")
+    assert result.response_text.endswith("\n\ndescribe the sanitized camera image (1 attachments)")
     assert "cjEtaW1hZ2U=" not in repr(result)
     assert "cjEtaW1hZ2U=" not in result.serialized_frames
     assert "data:image" not in result.serialized_frames
