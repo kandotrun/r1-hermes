@@ -230,10 +230,15 @@ The state directory contains two local files:
 - `device-token-hmac.key`: a locally generated HMAC key used only for device-token digests.
 
 Both files are written with owner-only `0600` permissions, and the state directory is forced to
-`0700`. New records use `hmac-sha256:v1:<digest>` rather than raw `SHA-256(token)`, so copying only
-`devices.json` is not enough to perform offline token analysis without the local HMAC key. The HMAC
-key is not derived from `R1_HERMES_GATEWAY_TOKEN`, is not included in QR payloads, and must not be
-logged, pasted into issue comments, committed, or sent to Rabbit R1.
+`0700`. `devices.json` updates are serialized with a local lock file and written through atomic
+same-directory replacement. The gateway refuses to read or replace symlinked, non-regular, or
+group/world-readable `devices.json` files; fix an unsafe existing file by stopping the gateway,
+verifying it is the intended local state file, and setting owner-only permissions with
+`chmod 600 ~/.r1-hermes/devices.json`. New records use `hmac-sha256:v1:<digest>` rather than raw
+`SHA-256(token)`, so copying only `devices.json` is not enough to perform offline token analysis
+without the local HMAC key. The HMAC key is not derived from `R1_HERMES_GATEWAY_TOKEN`, is not
+included in QR payloads, and must not be logged, pasted into issue comments, committed, or sent to
+Rabbit R1.
 
 Existing local records from older releases may contain unkeyed SHA-256 device-token hashes. For
 backward compatibility, a valid legacy device token is accepted once and the record is rewritten as

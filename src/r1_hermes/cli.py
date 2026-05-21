@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import ipaddress
-import json
 import logging
 import os
 import secrets
@@ -1140,14 +1139,7 @@ def _print_revoke_summary(
 
 
 def _read_state_device_ids(state_dir: Path) -> list[str]:
-    path = state_dir / STATE_FILE
-    if not path.exists():
-        return []
-    data = json.loads(path.read_text())
-    devices = data.get("devices", {}) if isinstance(data, dict) else {}
-    if not isinstance(devices, dict):
-        return []
-    return sorted(str(device_id) for device_id in devices)
+    return DeviceState.read_device_ids(state_dir)
 
 
 def _update_env_file_token(path: Path, token: str) -> Path:

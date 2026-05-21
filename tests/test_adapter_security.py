@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -3291,6 +3292,65 @@ def test_device_state_uses_keyed_digest_for_new_records(tmp_path):
     assert token_hash != raw_sha256
     assert token not in state.path.read_text()
     assert raw_sha256 not in state.path.read_text()
+
+
+def test_device_state_concurrent_issue_preserves_all_updates(tmp_path):
+    state_dir = tmp_path / "state"
+    DeviceState(state_dir)
+    device_ids = [f"r1-concurrent-{index:02d}" for index in range(24)]
+
+    def issue(device_id: str) -> None:
+        DeviceState(state_dir).issue_device_token(device_id)
+
+    for _attempt in range(3):
+        state = DeviceState(state_dir)
+        state.revoke_all()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+            list(executor.map(issue, device_ids))
+        saved_ids = set(DeviceState(state_dir).device_ids())
+        if saved_ids != set(device_ids):
+            break
+
+    assert saved_ids == set(device_ids)
+
+
+def test_device_state_rejects_symlinked_state_file(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(mode=0o700)
+    target = tmp_path / "external-devices.json"
+    target.write_text('{"devices": {}}')
+    target.chmod(0o600)
+    (state_dir / "devices.json").symlink_to(target)
+
+    with pytest.raises(ValueError, match="devices.json must not be a symlink"):
+        DeviceState(state_dir)
+
+
+def test_device_state_rejects_non_regular_state_file(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(mode=0o700)
+    (state_dir / "devices.json").mkdir()
+
+    with pytest.raises(ValueError, match="devices.json must be a regular file"):
+        DeviceState(state_dir)
+
+
+def test_device_state_rejects_unsafe_state_file_permissions(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(mode=0o700)
+    state_path = state_dir / "devices.json"
+    state_path.write_text('{"devices": {}}')
+    state_path.chmod(0o640)
+
+    with pytest.raises(ValueError, match="devices.json mode 0640 is unsafe"):
+        DeviceState(state_dir)
+
+
+def test_device_state_dry_run_device_id_read_does_not_create_digest_key(tmp_path):
+    state_dir = tmp_path / "state"
+
+    assert DeviceState.read_device_ids(state_dir) == []
+    assert not (state_dir / "device-token-hmac.key").exists()
 
 
 def test_device_state_upgrades_legacy_sha256_digest_after_valid_auth(monkeypatch, tmp_path):
