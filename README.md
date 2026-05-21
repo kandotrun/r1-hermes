@@ -132,6 +132,9 @@ Use Tailscale Serve, a Tailscale IP, firewall allowlist, or reverse proxy with m
 allowlisting when the Rabbit R1 must reach the gateway from another device. Do not use wildcard
 binds or expose the raw gateway directly to the public Internet. Copy-paste deployment recipes for
 Tailscale Serve and reverse proxies are in [`docs/running.md`](docs/running.md).
+If proxyless public reachability is unavoidable, use native TLS with `wss://`, a trusted
+certificate, firewall review, and a device allowlist; follow
+[`docs/public-wss-native-tls.md`](docs/public-wss-native-tls.md) before generating a QR.
 
 If you know the expected Rabbit R1 `device.id`, lock the gateway to it with repeatable
 `--allowed-device-id` options or `R1_HERMES_ALLOWED_DEVICE_IDS`. With an allowlist configured,
@@ -319,7 +322,9 @@ returns only `{"ok": true}`; paired-device counts are diagnostic data and requir
 `--health-diagnostics` or `R1_HERMES_HEALTH_DIAGNOSTICS=1` opt-in.
 
 See [`docs/systemd-user-service.md`](docs/systemd-user-service.md) for install, enable, status,
-logs, rollback, localhost, and Tailscale examples.
+logs, rollback, localhost, and Tailscale examples. For a public native `wss://` listener without a
+reverse proxy, use the stricter deployment runbook in
+[`docs/public-wss-native-tls.md`](docs/public-wss-native-tls.md).
 
 ## Security
 

@@ -78,7 +78,10 @@ routine configuration.
 For proxyless public operation, terminate TLS inside `r1-hermes` itself instead of advertising
 cleartext `ws://` on a public address. Use a certificate whose SAN covers the hostname or IP that
 Rabbit R1 will connect to, set the TLS paths in the env file, and generate pairing payloads with
-`--protocol wss`:
+`--protocol wss`. Follow the full security runbook in
+[`public-wss-native-tls.md`](public-wss-native-tls.md) for `sslip.io` or custom-domain DNS,
+Let's Encrypt issuance, certificate file permissions, `R1_HERMES_ALLOWED_DEVICE_IDS`, VPS-specific
+systemd compatibility overrides, renewal checks, and rollback:
 
 ```ini
 R1_HERMES_HOST=66.94.115.69
