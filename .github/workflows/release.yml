@@ -35,10 +35,49 @@ jobs:
           if ref_name.startswith("v") and ref_name != f"v{version}":
               raise SystemExit(f"tag {ref_name} does not match pyproject version {version}")
           PY
-      - name: Install build tools
-        run: python -m pip install --upgrade pip build
+      - name: Smoke editable install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev,qr]'
+      - name: Package metadata
+        run: |
+          python - <<'PY'
+          import importlib.metadata as metadata
+
+          distribution = metadata.distribution("r1-hermes")
+          assert distribution.metadata["Name"] == "r1-hermes"
+          assert distribution.metadata["Requires-Python"] == ">=3.10"
+
+          scripts = [
+              entry_point
+              for entry_point in distribution.entry_points
+              if entry_point.group == "console_scripts" and entry_point.name == "r1-hermes"
+          ]
+          assert scripts, "missing r1-hermes console script"
+          PY
+          python -m pip check
+      - name: Dependency audit
+        run: |
+          python -m pip_audit . --strict --progress-spinner off
+          python -m pip_audit --local --progress-spinner off --skip-editable
+      - name: CLI help smoke
+        run: |
+          r1-hermes --help
+          r1-hermes serve --help
+          r1-hermes hermes --help
+          r1-hermes payload --help
+          r1-hermes qr --help
+          r1-hermes probe --help
+      - name: Lint
+        run: python -m ruff check .
+      - name: Test
+        run: python -m pytest -q
+      - name: Compile
+        run: python -m compileall -q src tests
       - name: Build wheel and sdist
-        run: python -m build --sdist --wheel
+        run: |
+          rm -rf dist build
+          python -m build --sdist --wheel
       - name: Inspect artifact contents
         run: |
           python - <<'PY'
@@ -70,6 +109,22 @@ jobs:
                   if any(part in normalized for part in forbidden):
                       raise SystemExit(f"forbidden path in {artifact}: {normalized}")
           PY
+      - name: Verify wheel install
+        run: |
+          wheel_venv="$RUNNER_TEMP/r1-hermes-wheel"
+          python -m venv "$wheel_venv"
+          "$wheel_venv/bin/python" -m pip install --upgrade pip
+          "$wheel_venv/bin/python" -m pip install dist/*.whl
+          "$wheel_venv/bin/python" -m pip check
+          "$wheel_venv/bin/r1-hermes" --help
+      - name: Verify sdist install
+        run: |
+          sdist_venv="$RUNNER_TEMP/r1-hermes-sdist"
+          python -m venv "$sdist_venv"
+          "$sdist_venv/bin/python" -m pip install --upgrade pip
+          "$sdist_venv/bin/python" -m pip install dist/*.tar.gz
+          "$sdist_venv/bin/python" -m pip check
+          "$sdist_venv/bin/r1-hermes" --help
       - name: Generate dependency report
         run: |
           python -m venv "$RUNNER_TEMP/release-inspect"

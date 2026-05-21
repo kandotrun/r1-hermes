@@ -47,6 +47,12 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _assert_before(text: str, earlier: str, later: str) -> None:
+    assert earlier in text
+    assert later in text
+    assert text.index(earlier) < text.index(later)
+
+
 def _copy_worktree_for_build(destination: Path) -> None:
     git = shutil.which("git")
     assert git is not None
@@ -113,7 +119,18 @@ def test_release_workflow_builds_auditable_artifacts_from_tags() -> None:
         "fetch-depth: 0",
         "git status --short",
         "GITHUB_REF_NAME",
+        "python -m pip install -e '.[dev,qr]'",
+        "importlib.metadata as metadata",
+        "python -m pip_audit . --strict --progress-spinner off",
+        "python -m pip_audit --local --progress-spinner off --skip-editable",
+        "r1-hermes hermes --help",
+        "python -m ruff check .",
+        "python -m pytest -q",
+        "python -m compileall -q src tests",
         "python -m build --sdist --wheel",
+        "RUNNER_TEMP/r1-hermes-wheel",
+        "RUNNER_TEMP/r1-hermes-sdist",
+        "python -m pip check",
         "pip inspect --local",
         "r1-hermes-dependencies.txt",
         "SHA256SUMS",
@@ -128,6 +145,29 @@ def test_release_workflow_builds_auditable_artifacts_from_tags() -> None:
     assert "pull_request" not in workflow
     assert "R1_HERMES_GATEWAY_TOKEN" not in workflow
     assert "--print-payload" not in workflow
+
+
+def test_release_workflow_gates_before_artifact_upload_and_publish() -> None:
+    workflow = _read(RELEASE_WORKFLOW)
+
+    verification_gates = (
+        "python -m pip install -e '.[dev,qr]'",
+        "python -m pip_audit . --strict --progress-spinner off",
+        "python -m pip_audit --local --progress-spinner off --skip-editable",
+        "python -m ruff check .",
+        "python -m pytest -q",
+        "python -m compileall -q src tests",
+        "RUNNER_TEMP/r1-hermes-wheel",
+        "RUNNER_TEMP/r1-hermes-sdist",
+    )
+    artifact_uploads = (
+        "actions/attest-build-provenance",
+        "gh release create",
+    )
+
+    for gate in verification_gates:
+        for upload in artifact_uploads:
+            _assert_before(workflow, gate, upload)
 
 
 def test_manifest_excludes_secret_local_state_and_fixture_payloads() -> None:
@@ -206,6 +246,8 @@ def test_release_docs_cover_versioning_install_verification_and_secret_handling(
         "vMAJOR.MINOR.PATCH",
         "`pyproject.toml` is the version source of truth",
         "python -m build --sdist --wheel",
+        "release tags are self-verifying in CI",
+        "python -m pip_audit . --strict --progress-spinner off",
         "r1_hermes-<version>-py3-none-any.whl",
         "SHA256SUMS",
         "sha256sum -c SHA256SUMS",
