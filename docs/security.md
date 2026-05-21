@@ -85,6 +85,16 @@ avoid raising the per-device cap unless the operator explicitly accepts that one
 consume multiple Hermes subprocess slots. When a cap is reached, the gateway returns a generic
 `BUSY` response and does not start Hermes.
 
+Authenticated R1 chat runs also have a deterministic gateway timeout. The default is 180 seconds;
+configure it with `--timeout`, `R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS`, or the legacy
+`R1_HERMES_TIMEOUT` service value. The default Hermes CLI subprocess receives the same limit and is
+killed when it expires. The device receives only `CHAT_RUN_TIMEOUT` and the fixed gateway-limit
+message, while local audit fields contain duration, hashed IDs, and safe error codes only. During a
+live run, the gateway emits fixed `running` heartbeat events every 15 seconds by default,
+configurable with `--heartbeat-interval` or `R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS`. Heartbeat
+events must not include prompts, tool stderr, raw tool names/output, bearer tokens, QR payloads, or
+raw device IDs.
+
 Hermes tool access defaults to `safe`. Lower-risk expansion such as `safe,web` is allowed when the
 operator intentionally wants web access. High-impact toolsets are treated as host or environment
 control surfaces and fail closed when requested from `--toolsets` or `R1_HERMES_TOOLSETS`; this

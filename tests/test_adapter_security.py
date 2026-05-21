@@ -72,6 +72,7 @@ class CancellableBlockingHermesSink(BlockingHermesSink):
 class FakeWebSocket:
     def __init__(self):
         self.frames = []
+        self.closed = False
 
     async def send_json(self, frame):
         self.frames.append(frame)
@@ -1065,7 +1066,7 @@ async def test_gateway_connect_rejects_bad_token_without_ack_events_or_agent_run
         (
             TimeoutError("DUMMY_GATEWAY_TOKEN_DO_NOT_USE timed out"),
             "CHAT_RUN_TIMEOUT",
-            "chat run timed out",
+            "run exceeded the R1 gateway timeout limit",
         ),
     ],
 )
@@ -2230,7 +2231,7 @@ async def test_global_inflight_counter_is_released_after_timeout_error(
         assert timeout_event["payload"]["state"] == "error"
         assert timeout_event["payload"]["error"] == {
             "code": "CHAT_RUN_TIMEOUT",
-            "message": "chat run timed out",
+            "message": "run exceeded the R1 gateway timeout limit",
         }
 
         adapter.message_handler = FakeHermesSink()
@@ -2252,6 +2253,110 @@ async def test_global_inflight_counter_is_released_after_timeout_error(
 
 
 @pytest.mark.asyncio
+async def test_chat_run_timeout_limit_cancels_handler_and_reports_gateway_limit(tmp_path):
+    sink = CancellableBlockingHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            chat_run_timeout_seconds=0.01,
+            chat_heartbeat_interval_seconds=0.001,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    ws = FakeWebSocket()
+
+    await adapter._handle_chat_send(
+        ws,
+        "chat-timeout-limit",
+        chat_frame(
+            rid="chat-timeout-limit",
+            message="private timeout prompt DUMMY_SECRET_TOKEN_DO_NOT_USE",
+        ),
+        "r1-timeout-limit",
+    )
+
+    await asyncio.wait_for(sink.cancelled.wait(), timeout=1)
+    error = ws.frames[-1]
+    serialized = json.dumps(ws.frames)
+
+    assert ws.frames[0]["ok"] is True
+    assert ws.frames[1]["payload"]["state"] == "started"
+    assert error["payload"]["state"] == "error"
+    assert error["payload"]["error"] == {
+        "code": "CHAT_RUN_TIMEOUT",
+        "message": "run exceeded the R1 gateway timeout limit",
+    }
+    assert "private timeout prompt" not in serialized
+    assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_chat_run_emits_periodic_heartbeats_without_prompt_or_tokens(tmp_path):
+    sink = BlockingHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            chat_heartbeat_interval_seconds=0.01,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    ws = FakeWebSocket()
+    task = asyncio.create_task(
+        adapter._handle_chat_send(
+            ws,
+            "chat-heartbeat",
+            chat_frame(
+                rid="chat-heartbeat",
+                message="private heartbeat prompt DUMMY_SECRET_TOKEN_DO_NOT_USE",
+            ),
+            "r1-heartbeat",
+        )
+    )
+
+    try:
+        await sink.wait_for_calls(1)
+        await wait_until(
+            lambda: len(
+                [
+                    frame
+                    for frame in ws.frames
+                    if frame.get("payload", {}).get("state") == "running"
+                ]
+            )
+            >= 2,
+            timeout=1,
+        )
+        heartbeats = [
+            frame for frame in ws.frames if frame.get("payload", {}).get("state") == "running"
+        ]
+
+        assert [frame["payload"]["seq"] for frame in heartbeats[:2]] == [2, 3]
+        for heartbeat in heartbeats[:2]:
+            assert heartbeat["type"] == "event"
+            assert heartbeat["event"] == "chat"
+            assert heartbeat["payload"]["runId"] == "run-chat-heartbeat"
+            assert heartbeat["payload"]["sessionKey"] == "main"
+            assert heartbeat["payload"]["heartbeat"] is True
+            assert heartbeat["payload"]["message"] == "Hermes is still working."
+
+        serialized = json.dumps(heartbeats)
+        assert "private heartbeat prompt" not in serialized
+        assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in serialized
+        assert "gateway-token-for-tests" not in serialized
+    finally:
+        sink.release.set()
+        await task
+
+    final = ws.frames[-1]
+    assert final["payload"]["state"] == "final"
+    assert final["payload"]["seq"] > heartbeats[-1]["payload"]["seq"]
+
+
+@pytest.mark.asyncio
 async def test_websocket_disconnect_cancels_active_chat_run_and_releases_inflight(
     unused_tcp_port,
     tmp_path,
@@ -2269,6 +2374,7 @@ async def test_websocket_disconnect_cancels_active_chat_run_and_releases_infligh
             per_device_concurrency=1,
             global_concurrency=1,
             rate_limit_messages=10,
+            chat_heartbeat_interval_seconds=0.01,
         ),
         message_handler=sink,
     )
@@ -2287,6 +2393,9 @@ async def test_websocket_disconnect_cancels_active_chat_run_and_releases_infligh
         assert (await first_ws.receive_json())["ok"] is True
         assert (await first_ws.receive_json())["payload"]["state"] == "started"
         await sink.wait_for_calls(1)
+        heartbeat = await first_ws.receive_json(timeout=1)
+        assert heartbeat["payload"]["state"] == "running"
+        assert heartbeat["payload"]["heartbeat"] is True
 
         await first_ws.close()
         await first_session.close()
@@ -2395,6 +2504,8 @@ def test_config_from_env_reads_global_concurrency(monkeypatch, tmp_path):
     monkeypatch.setenv("R1_HERMES_PER_DEVICE_CONCURRENCY", "2")
     monkeypatch.setenv("R1_HERMES_IDEMPOTENCY_CACHE_MAX_ENTRIES", "12")
     monkeypatch.setenv("R1_HERMES_IDEMPOTENCY_CACHE_TTL_SECONDS", "34")
+    monkeypatch.setenv("R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS", "240")
+    monkeypatch.setenv("R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS", "7")
 
     config = R1HermesConfig.from_env(state_dir=tmp_path)
 
@@ -2402,6 +2513,8 @@ def test_config_from_env_reads_global_concurrency(monkeypatch, tmp_path):
     assert config.per_device_concurrency == 2
     assert config.idempotency_cache_max_entries == 12
     assert config.idempotency_cache_ttl_seconds == 34
+    assert config.chat_run_timeout_seconds == 240
+    assert config.chat_heartbeat_interval_seconds == 7
 
 
 def test_config_rejects_invalid_concurrency(tmp_path):

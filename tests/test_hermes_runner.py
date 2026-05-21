@@ -191,7 +191,7 @@ async def test_runner_times_out_cleanly():
         await runner("hi", device_id="r1", session_key="main")
 
     assert excinfo.value.code == "CHAT_RUN_TIMEOUT"
-    assert excinfo.value.safe_message == "chat run timed out"
+    assert excinfo.value.safe_message == "run exceeded the R1 gateway timeout limit"
     assert process.killed is True
 
 

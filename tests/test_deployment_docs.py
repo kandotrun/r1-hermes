@@ -69,6 +69,21 @@ def test_deployment_examples_do_not_print_qr_payloads_or_tokens() -> None:
         assert "Authorization: Bearer" not in block
 
 
+def test_docs_cover_r1_timeout_and_heartbeat_policy() -> None:
+    combined = "\n".join(_read(doc) for doc in TARGET_DOCS)
+
+    for required in (
+        "R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS",
+        "R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS",
+        "CHAT_RUN_TIMEOUT",
+        "exceeded the R1 gateway timeout limit",
+        "--heartbeat-interval",
+        "tool stderr",
+        "prompts",
+    ):
+        assert required in combined
+
+
 def test_systemd_docs_cover_tailscale_serve_and_proxy_checks() -> None:
     systemd = _read(SYSTEMD)
 

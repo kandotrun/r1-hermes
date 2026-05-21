@@ -93,8 +93,18 @@ r1-hermes hermes \
   --toolsets safe,web \
   --global-concurrency 2 \
   --per-device-concurrency 1 \
-  --timeout 180
+  --timeout 180 \
+  --heartbeat-interval 15
 ```
+
+`--timeout` is the deterministic R1 gateway run limit for one authenticated `chat.send`; it also
+sets the Hermes subprocess timeout for the default CLI runner. The same value can be supplied with
+`R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS`, or the older `R1_HERMES_TIMEOUT` service setting. When the
+limit is exceeded, the device receives `CHAT_RUN_TIMEOUT` with a generic gateway-limit message and
+the Hermes process is cancelled. While a run is active, the gateway emits generic `running`
+heartbeat chat events every `--heartbeat-interval` seconds, configurable with
+`R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS`; these events do not include prompts, tool stderr, or
+token material.
 
 Toolsets that can affect the host, local files, browsers/desktops, smart-home systems, or vehicles
 fail closed for Rabbit R1 sessions. Requests such as `--toolsets terminal,file` or the same value in
