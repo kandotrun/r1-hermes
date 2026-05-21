@@ -23,11 +23,12 @@ As of 2026-05-21:
 - Text chat through Rabbit R1 is operational through the standalone `r1-hermes hermes` bridge.
 - OpenClaw/Rabbit handshake variants `connect` and `gateway.connect` are supported.
 - `chat.send` text extraction is implemented for common text fields and `content` items of type `text` / `input_text`.
+- Known media-shaped content is recognized and rejected with safe `UNSUPPORTED_MEDIA` errors instead of being silently dropped; full camera/Vision ingestion is still pending.
 - `chat.history` currently returns an explicit unsupported/empty history response.
 - Device-token persistence uses keyed HMAC digests and has max-age/idle expiry.
 - Public bind, high-impact Hermes toolsets, remote health diagnostics, and wildcard exposure are fail-closed unless explicitly opted into.
 - Native TLS/WSS is supported with `--tls-cert-file` and `--tls-key-file`.
-- Rabbit R1 camera/media ingestion is not complete. The active backlog is issues #58 through #65, especially image parsing, MEDIA handoff to Hermes Vision, secret-safe frame diagnostics, and media fixture replay.
+- Public native WSS deployment docs and Slack-equivalent toolset doctor checks have landed; current open camera/reliability backlog is issues #58, #59, #60, #61, #64, and #65.
 
 Do not assume R1 camera photos are already passed to Hermes Vision. Confirm in `src/r1_hermes/payloads.py`, `src/r1_hermes/adapter.py`, and tests before claiming support.
 
@@ -265,18 +266,18 @@ The next major feature area is R1 camera/media support. Work on it in small, tes
 Current parser limitation:
 
 - `ChatSendRequest` only contains `message`, `session_key`, and `idempotency_key`.
-- `_content_to_text` ignores non-text content items.
-- Image/audio/media fields may currently produce `EMPTY_MESSAGE`, be ignored, or arrive through an unsupported method.
+- `_content_to_text` extracts text from supported text parts and raises `UNSUPPORTED_MEDIA` for known media-shaped content.
+- Image/audio/media fields are recognized as unsupported today; they are not yet decoded, persisted, or passed through to Hermes Vision.
+- Unknown R1 camera methods/shapes may still need safe real-device shape capture before implementation.
 
 Preferred implementation order:
 
-1. Add typed attachment metadata to `payloads.py`, for example source field, MIME type, size, filename/extension, and either a safe bytes handle or a decoded private temp file reference.
+1. Preserve the current explicit `UNSUPPORTED_MEDIA` behavior while adding typed attachment metadata to `payloads.py`, for example source field, MIME type, size, filename/extension, and either a safe bytes handle or a decoded private temp file reference.
 2. Extend parser tests with sanitized media fixtures before wiring Hermes Vision.
-3. Reject unsupported media with explicit safe errors instead of silently dropping it.
-4. Store accepted images under the configured state directory with restrictive permissions and cleanup/TTL.
-5. Pass images to Hermes as `MEDIA:/absolute/path` plus the user text so the existing Vision toolchain can consume them.
-6. Add replay tests using sanitized real-device fixture shapes.
-7. Confirm logs show only counts, sizes, hashes, and shape metadata, never raw media.
+3. Store accepted images under the configured state directory with restrictive permissions and cleanup/TTL.
+4. Pass images to Hermes as `MEDIA:/absolute/path` plus the user text so the existing Vision toolchain can consume them.
+5. Add replay tests using sanitized real-device fixture shapes.
+6. Confirm logs show only counts, sizes, hashes, and shape metadata, never raw media.
 
 When capturing real-device media shapes:
 
@@ -290,14 +291,12 @@ When capturing real-device media shapes:
 
 The GitHub repo is `kandotrun/r1-hermes`. The active GitHub Project is user project `kandotrun` project number `2` titled `r1-hermes`.
 
-Current intended Todo issues include:
+Current open Todo issues include:
 
 - #58 — Implement Rabbit R1 camera image ingestion for Hermes Vision.
 - #59 — Pass R1 image attachments through to Hermes as MEDIA files.
 - #60 — Add secret-safe frame-shape diagnostics for unknown Rabbit R1 media methods.
 - #61 — Improve long-running R1 chat UX with configurable timeout and heartbeat events.
-- #62 — Add doctor and regression checks for Slack-equivalent R1 toolset parity.
-- #63 — Document public WSS deployment runbook with native TLS, allowlist, and cert renewal.
 - #64 — Add reconnect-safe retry semantics for R1 sends during mobile network drops.
 - #65 — Add sanitized real-device media fixture replay once R1 camera payload is captured.
 
