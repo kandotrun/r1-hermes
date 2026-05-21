@@ -8,7 +8,10 @@ from r1_hermes.qr import write_qr_png
 
 
 class FakeQrImage:
-    def save(self, target):
+    save_calls = []
+
+    def save(self, target, **kwargs):
+        self.save_calls.append(kwargs)
         if hasattr(target, "write"):
             target.write(b"fake-qr-png")
             return
@@ -24,6 +27,7 @@ class FakeQrCodeModule:
 
 @pytest.fixture(autouse=True)
 def fake_qrcode(monkeypatch):
+    FakeQrImage.save_calls = []
     monkeypatch.setitem(sys.modules, "qrcode", FakeQrCodeModule())
 
 
@@ -34,6 +38,7 @@ def test_write_qr_png_creates_owner_only_file_and_new_parent(tmp_path):
 
     assert written == output
     assert output.read_bytes() == b"fake-qr-png"
+    assert FakeQrImage.save_calls == [{"format": "PNG"}]
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
     assert stat.S_IMODE(output.parent.stat().st_mode) == 0o700
 
@@ -58,4 +63,5 @@ def test_write_qr_png_force_overwrites_with_owner_only_permissions(tmp_path):
     write_qr_png("dummy-payload", output, overwrite=True)
 
     assert output.read_bytes() == b"fake-qr-png"
+    assert FakeQrImage.save_calls == [{"format": "PNG"}]
     assert stat.S_IMODE(output.stat().st_mode) == 0o600

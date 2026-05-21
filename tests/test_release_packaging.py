@@ -55,6 +55,17 @@ SECRET_EXCLUSION_DOC_TEXT = (
     "`.env`, `.r1-hermes/`, `devices.json`, `device-token-hmac.key`, and "
     "`r1-hermes-secret*.png`"
 )
+QR_EXTRA_WHEEL_INSTALL = 'pip install "${wheel_artifacts[0]}[qr]"'
+QR_EXTRA_SDIST_INSTALL = 'pip install "${sdist_artifacts[0]}[qr]"'
+QR_SMOKE_COMMAND_PARTS = (
+    "qr --host 127.0.0.1 --port 18789 --protocol ws",
+    "--output \"$qr_output\"",
+    'qr_smoke_token="$("$wheel_qr_venv/bin/python" -c',
+    'qr_smoke_token="$("$sdist_qr_venv/bin/python" -c',
+    "secrets.token_urlsafe(32)",
+    'startswith(b"\\x89PNG\\r\\n\\x1a\\n")',
+    "QR smoke printed secret payload material",
+)
 
 
 def _read(path: Path) -> str:
@@ -154,7 +165,11 @@ def test_release_workflow_builds_auditable_artifacts_from_tags() -> None:
         "python -m build --sdist --wheel",
         "RUNNER_TEMP/r1-hermes-wheel",
         "RUNNER_TEMP/r1-hermes-sdist",
+        "RUNNER_TEMP/r1-hermes-wheel-qr",
+        "RUNNER_TEMP/r1-hermes-sdist-qr",
         "python -m pip check",
+        QR_EXTRA_WHEEL_INSTALL,
+        QR_EXTRA_SDIST_INSTALL,
         "pip inspect --local",
         "r1-hermes-dependencies.txt",
         "SHA256SUMS",
@@ -168,6 +183,8 @@ def test_release_workflow_builds_auditable_artifacts_from_tags() -> None:
         "packaging/systemd/r1-hermes.service",
         "packaging/systemd/r1-hermes.env.example",
     ):
+        assert required in workflow
+    for required in QR_SMOKE_COMMAND_PARTS:
         assert required in workflow
 
     assert "pull_request" not in workflow
@@ -187,6 +204,10 @@ def test_release_workflow_gates_before_artifact_upload_and_publish() -> None:
         "python -m compileall -q src tests",
         "RUNNER_TEMP/r1-hermes-wheel",
         "RUNNER_TEMP/r1-hermes-sdist",
+        "RUNNER_TEMP/r1-hermes-wheel-qr",
+        "RUNNER_TEMP/r1-hermes-sdist-qr",
+        QR_EXTRA_WHEEL_INSTALL,
+        QR_EXTRA_SDIST_INSTALL,
     )
     artifact_uploads = (
         "actions/attest-build-provenance",
@@ -293,6 +314,9 @@ def test_release_docs_cover_versioning_install_verification_and_secret_handling(
         "gh attestation verify",
         "pip install ./r1_hermes-<version>-py3-none-any.whl[qr]",
         "pip install -e '.[dev,qr]'",
+        QR_EXTRA_WHEEL_INSTALL,
+        QR_EXTRA_SDIST_INSTALL,
+        "qr --host 127.0.0.1 --port 18789 --protocol ws",
         "Do not upload gateway tokens, device tokens, QR payload JSON, QR PNG files",
         SECRET_EXCLUSION_DOC_TEXT,
     ):

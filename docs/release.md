@@ -24,8 +24,10 @@ builds from a clean checkout and verifies that a tag matches `pyproject.toml`. T
 before any artifact can be attested or uploaded, the release job runs the
 same security-relevant gates as the normal CI path: editable install and metadata smoke checks,
 dependency audit, CLI help smoke, lint, pytest, compileall, archive inspection, and wheel/sdist
-install smoke verification. Only after those commands pass does it create dependency reports,
-write checksums, request GitHub provenance attestations, and publish a tagged GitHub release.
+install smoke verification. The release job also installs both local artifacts with the documented
+`[qr]` extra and generates a localhost QR PNG without printing payload JSON. Only after those
+commands pass does it create dependency reports, write checksums, request GitHub provenance
+attestations, and publish a tagged GitHub release.
 
 Local release-equivalent build:
 
@@ -52,10 +54,19 @@ python -m compileall -q src tests
 python -m build --sdist --wheel
 python -m pip check
 r1-hermes --help
+pip install "${wheel_artifacts[0]}[qr]"
+qr_smoke_token="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+r1-hermes qr --host 127.0.0.1 --port 18789 --protocol ws --token "$qr_smoke_token" --output "$qr_output"
+pip install "${sdist_artifacts[0]}[qr]"
+qr_smoke_token="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+r1-hermes qr --host 127.0.0.1 --port 18789 --protocol ws --token "$qr_smoke_token" --output "$qr_output"
 ```
 
-The final `python -m pip check` and `r1-hermes --help` checks are run from fresh temporary wheel
-and sdist virtual environments, not from the editable checkout.
+The final `python -m pip check`, `r1-hermes --help`, and QR checks are run from fresh temporary
+wheel and sdist virtual environments, not from the editable checkout. The QR smoke generates a
+fresh token inside the temporary environment, captures stdout/stderr, verifies the file starts with
+the PNG signature, and fails if that token, `"token"`, or `clawdbot-gateway` payload marker appears
+in command output. Do not add `--print-payload` to this release gate.
 
 Expected public artifacts:
 
