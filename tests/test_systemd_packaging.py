@@ -53,6 +53,8 @@ def test_systemd_service_limits_writable_paths() -> None:
     assert "--ready-file %t/r1-hermes/ready" in service_text
     assert "--timeout ${R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS}" in service_text
     assert "--heartbeat-interval ${R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS}" in service_text
+    assert "--outbound-text-max-chars ${R1_HERMES_OUTBOUND_TEXT_MAX_CHARS}" in service_text
+    assert "--outbound-event-max-bytes ${R1_HERMES_OUTBOUND_EVENT_MAX_BYTES}" in service_text
 
 
 def test_env_example_keeps_localhost_default_and_token_placeholder() -> None:
@@ -68,6 +70,8 @@ def test_env_example_keeps_localhost_default_and_token_placeholder() -> None:
     assert "R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1" in env_text
     assert "R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS=180" in env_text
     assert "R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS=15" in env_text
+    assert "R1_HERMES_OUTBOUND_TEXT_MAX_CHARS=8192" in env_text
+    assert "R1_HERMES_OUTBOUND_EVENT_MAX_BYTES=65536" in env_text
     assert "# R1_HERMES_ALLOW_REMOTE_HEALTH=1" in env_text
     assert "# R1_HERMES_HEALTH_DIAGNOSTICS=1" in env_text
     assert WILDCARD_HOST not in env_text
@@ -190,6 +194,9 @@ def test_systemd_docs_cover_operations_and_health_checks() -> None:
         "r1-hermes probe",
         "R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS",
         "R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS",
+        "R1_HERMES_OUTBOUND_TEXT_MAX_CHARS",
+        "R1_HERMES_OUTBOUND_EVENT_MAX_BYTES",
+        "CHAT_OUTPUT_TOO_LARGE",
         "systemctl --user enable --now r1-hermes.service",
         "journalctl --user-unit r1-hermes.service",
         "## Write-path assumptions",

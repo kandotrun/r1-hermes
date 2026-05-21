@@ -100,7 +100,9 @@ r1-hermes hermes \
   --global-concurrency 2 \
   --per-device-concurrency 1 \
   --timeout 180 \
-  --heartbeat-interval 15
+  --heartbeat-interval 15 \
+  --outbound-text-max-chars 8192 \
+  --outbound-event-max-bytes 65536
 ```
 
 `--timeout` is the deterministic R1 gateway run limit for one authenticated `chat.send`; it also
@@ -111,6 +113,15 @@ the Hermes process is cancelled. While a run is active, the gateway emits generi
 heartbeat chat events every `--heartbeat-interval` seconds, configurable with
 `R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS`; these events do not include prompts, tool stderr, or
 token material.
+
+Assistant text returned to Rabbit R1 is also bounded. `--outbound-text-max-chars` /
+`R1_HERMES_OUTBOUND_TEXT_MAX_CHARS` defaults to `8192` characters, and
+`--outbound-event-max-bytes` / `R1_HERMES_OUTBOUND_EVENT_MAX_BYTES` defaults to `65536` serialized
+JSON bytes per outbound WebSocket event. Oversized Hermes stdout or native gateway proactive sends
+are replaced with a deterministic truncated notice, and if the serialized event would still exceed
+the byte cap the R1 receives `CHAT_OUTPUT_TOO_LARGE`. Audit logs include only original/sent lengths,
+byte counts, limits, and hashes, never the response body. Raise these limits only after checking the
+R1 UX and memory impact for large Vision/tool responses.
 
 Toolsets that can affect the host, local files, browsers/desktops, smart-home systems, or vehicles
 fail closed for Rabbit R1 sessions. Requests such as `--toolsets terminal,file` or the same value in

@@ -10,6 +10,15 @@ from typing import Any
 from aiohttp import web
 
 from .adapter import AuthResult, R1HermesAdapter, R1HermesConfig
+from .audit import audit_log, hash_identifier
+from .chat_errors import ChatOutputTooLargeError
+from .outbound import (
+    BoundedText,
+    bound_outbound_identifier,
+    bound_outbound_text,
+    event_size_bytes,
+    truncated_outbound_text,
+)
 from .payloads import ImageAttachment
 from .toolsets import sanitize_platform_toolsets
 
@@ -199,7 +208,15 @@ class R1NativeGatewayAdapter(R1HermesAdapter):
                 return False
 
         try:
-            await ws.send_json(_chat_final_event(run_id or secrets.token_hex(8), key[1], text))
+            await ws.send_json(
+                _bounded_chat_final_event(
+                    run_id or secrets.token_hex(8),
+                    key[1],
+                    text,
+                    config=self.config,
+                    device_id=key[0],
+                )
+            )
         except (ConnectionResetError, RuntimeError):
             async with self._active_socket_lock:
                 if self._active_sockets.get(key) is ws:
@@ -272,8 +289,8 @@ def _chat_final_event(run_id: str, session_key: str, text: str) -> dict[str, Any
         "type": "event",
         "event": "chat",
         "payload": {
-            "runId": run_id,
-            "sessionKey": session_key,
+            "runId": bound_outbound_identifier(run_id, fallback_prefix="run"),
+            "sessionKey": bound_outbound_identifier(session_key, fallback_prefix="session"),
             "seq": 1,
             "state": "final",
             "message": {
@@ -282,4 +299,81 @@ def _chat_final_event(run_id: str, session_key: str, text: str) -> dict[str, Any
                 "timestamp": int(time.time() * 1000),
             },
         },
+    }
+
+
+def _bounded_chat_final_event(
+    run_id: str,
+    session_key: str,
+    text: str,
+    *,
+    config: R1HermesConfig,
+    device_id: str,
+) -> dict[str, Any]:
+    bounded = bound_outbound_text(text, max_chars=config.outbound_text_max_chars)
+    event = _chat_final_event(run_id, session_key, bounded.text)
+    if bounded.truncated:
+        event["payload"]["outbound"] = _outbound_truncated_payload(bounded)
+        audit_log(
+            "warning",
+            "native.send_truncated",
+            device_id_hash=hash_identifier(device_id),
+            session_key_hash=hash_identifier(session_key),
+            run_id_hash=hash_identifier(run_id),
+            original_chars=bounded.original_chars,
+            returned_chars=bounded.returned_chars,
+            outbound_text_max_chars=bounded.max_chars,
+        )
+
+    candidate_event_bytes = event_size_bytes(event)
+    if candidate_event_bytes <= config.outbound_event_max_bytes:
+        return event
+
+    error = ChatOutputTooLargeError()
+    error_event = _chat_error_event(run_id, session_key, error)
+    if event_size_bytes(error_event) > config.outbound_event_max_bytes:
+        error = ChatOutputTooLargeError(
+            truncated_outbound_text(max_chars=config.outbound_text_max_chars)
+        )
+        error_event = _chat_error_event(run_id, session_key, error)
+    audit_log(
+        "warning",
+        "native.outbound_event_too_large",
+        device_id_hash=hash_identifier(device_id),
+        session_key_hash=hash_identifier(session_key),
+        run_id_hash=hash_identifier(run_id),
+        response_chars=len(str(text or "")),
+        response_sent_chars=bounded.returned_chars,
+        response_truncated=bounded.truncated,
+        candidate_event_bytes=candidate_event_bytes,
+        error_event_bytes=event_size_bytes(error_event),
+        outbound_event_max_bytes=config.outbound_event_max_bytes,
+    )
+    return error_event
+
+
+def _chat_error_event(
+    run_id: str,
+    session_key: str,
+    error: ChatOutputTooLargeError,
+) -> dict[str, Any]:
+    return {
+        "type": "event",
+        "event": "chat",
+        "payload": {
+            "runId": bound_outbound_identifier(run_id, fallback_prefix="run"),
+            "sessionKey": bound_outbound_identifier(session_key, fallback_prefix="session"),
+            "seq": 1,
+            "state": "error",
+            "error": {"code": error.code, "message": error.safe_message},
+        },
+    }
+
+
+def _outbound_truncated_payload(bounded: BoundedText) -> dict[str, Any]:
+    return {
+        "truncated": True,
+        "originalChars": bounded.original_chars,
+        "returnedChars": bounded.returned_chars,
+        "maxChars": bounded.max_chars,
     }

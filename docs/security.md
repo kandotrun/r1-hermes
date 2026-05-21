@@ -22,7 +22,9 @@ For supported Python versions and disclosure routing, see [`../README.md`](../RE
 4. No unauthenticated admin UI.
 5. Device tokens are stored as keyed HMAC-SHA-256 digests under a `0700` state directory, bound to the original `device.id`, and expire by configured age and idle windows.
 6. Unauthenticated handshake limits are enforced by peer IP before authentication.
-7. Authenticated socket caps, idle/lifetime policy, rate limit, length limit, global concurrency limit, and per-device concurrency limit are enforced before Hermes execution.
+7. Authenticated socket caps, idle/lifetime policy, rate limit, input length limit, outbound
+   event/text size limits, global concurrency limit, and per-device concurrency limit are enforced
+   before and around Hermes execution.
 8. QR payloads contain secrets and must be shared/retained accordingly.
 9. HTTP health checks expose only minimal readiness by default and stay local-only unless remote
    health access is explicitly reviewed.
@@ -117,6 +119,21 @@ live run, the gateway emits fixed `running` heartbeat events every 15 seconds by
 configurable with `--heartbeat-interval` or `R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS`. Heartbeat
 events must not include prompts, tool stderr, raw tool names/output, bearer tokens, QR payloads, or
 raw device IDs.
+
+Outbound assistant responses are bounded before being sent back to Rabbit R1. The standalone Hermes
+CLI runner limits decoded stdout with `R1_HERMES_OUTBOUND_TEXT_MAX_CHARS` /
+`--outbound-text-max-chars`; the WebSocket adapter also enforces
+`R1_HERMES_OUTBOUND_EVENT_MAX_BYTES` / `--outbound-event-max-bytes` on the final serialized chat
+event. The same policy applies to native Gateway prototype proactive sends. When text is too large,
+the R1 receives a fixed truncated notice rather than any prefix of the private output. When the
+bounded event would still exceed the byte cap, the R1 receives `CHAT_OUTPUT_TOO_LARGE` with a fixed
+safe message. Local audit metadata may include original character count, returned character count,
+candidate event bytes, cap values, durations, and hashed IDs, but must not include the prompt,
+Hermes stdout, native send text, media bytes, or stderr.
+
+Treat client-supplied lifecycle identifiers as untrusted metadata. The gateway may echo normal short
+`runId` and `sessionKey` values for compatibility, but long or secret-shaped identifiers are replaced
+with short hashes before outbound chat events are serialized.
 
 Hermes tool access defaults to `safe`. Lower-risk expansion such as `safe,web` is allowed when the
 operator intentionally wants web access. High-impact toolsets are treated as host or environment

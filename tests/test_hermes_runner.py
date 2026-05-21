@@ -49,6 +49,58 @@ async def test_runner_invokes_hermes_chat_with_safe_defaults():
 
 
 @pytest.mark.asyncio
+async def test_runner_allows_stdout_at_outbound_boundary():
+    async def fake_factory(*_argv, **_kwargs):
+        return FakeProcess(b"boundary")
+
+    runner = HermesCliRunner(
+        process_factory=fake_factory,
+        timeout_seconds=3,
+        output_max_chars=len("boundary"),
+    )
+
+    assert await runner("hi", device_id="r1", session_key="main") == "boundary"
+
+
+@pytest.mark.asyncio
+async def test_runner_truncates_oversized_stdout_with_redacted_audit(caplog):
+    private_output = "assistant output DUMMY_SECRET_TOKEN_DO_NOT_USE " + ("x" * 80)
+
+    async def fake_factory(*_argv, **_kwargs):
+        return FakeProcess(private_output.encode("utf-8"))
+
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    runner = HermesCliRunner(process_factory=fake_factory, timeout_seconds=3, output_max_chars=48)
+
+    response = await runner(
+        "full private prompt DUMMY_PROMPT_TOKEN_DO_NOT_USE",
+        device_id="r1-runner-large-output",
+        session_key="main",
+    )
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    event = next(
+        json.loads(record.message)
+        for record in caplog.records
+        if record.name == "r1_hermes.audit" and "hermes.stdout_truncated" in record.message
+    )
+
+    assert len(response) <= 48
+    assert "truncated" in response
+    assert event["event"] == "hermes.stdout_truncated"
+    assert event["level"] == "warning"
+    assert event["stdout_bytes"] == len(private_output.encode("utf-8"))
+    assert event["returned_chars"] == len(response)
+    assert event["output_max_chars"] == 48
+    assert event["device_id_hash"].startswith("sha256:")
+    assert event["session_key_hash"].startswith("sha256:")
+    assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in logs
+    assert "DUMMY_PROMPT_TOKEN_DO_NOT_USE" not in logs
+    assert "full private prompt" not in logs
+    assert "r1-runner-large-output" not in logs
+
+
+@pytest.mark.asyncio
 async def test_runner_can_disable_session_continuation_and_set_toolsets():
     calls = []
 
