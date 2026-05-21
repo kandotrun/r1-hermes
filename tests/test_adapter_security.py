@@ -36,6 +36,16 @@ class FakeHermesSink:
         return f"echo: {text}"
 
 
+class FixedResponseHermesSink:
+    def __init__(self, response: str):
+        self.response = response
+        self.messages = []
+
+    async def __call__(self, text: str, *, device_id: str, session_key: str) -> str:
+        self.messages.append({"text": text, "device_id": device_id, "session_key": session_key})
+        return self.response
+
+
 class AttachmentAwareHermesSink:
     def __init__(self):
         self.calls = []
@@ -1349,6 +1359,192 @@ async def test_chat_run_lifecycle_audit_logs_do_not_include_full_message_body(
     finally:
         await ws.close()
         await session.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_final_response_at_outbound_boundary_is_not_truncated(tmp_path):
+    sink = FixedResponseHermesSink("1234567890")
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token=STRONG_GATEWAY_TOKEN,
+            state_dir=tmp_path,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+            outbound_text_max_chars=10,
+            outbound_event_max_bytes=4096,
+        ),
+        message_handler=sink,
+    )
+    ws = FakeWebSocket()
+
+    await adapter._handle_chat_send(
+        ws,
+        "chat-boundary",
+        chat_frame(rid="chat-boundary", message="hello"),
+        "r1-outbound-boundary",
+    )
+
+    final = ws.frames[2]
+    assert final["payload"]["state"] == "final"
+    assert final["payload"]["message"]["content"][0]["text"] == "1234567890"
+    assert "outbound" not in final["payload"]
+
+
+@pytest.mark.asyncio
+async def test_chat_final_response_is_truncated_and_audited_without_output_dump(
+    tmp_path,
+    caplog,
+):
+    private_response = "assistant private output DUMMY_SECRET_TOKEN_DO_NOT_USE " + ("x" * 200)
+    sink = FixedResponseHermesSink(private_response)
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token=STRONG_GATEWAY_TOKEN,
+            state_dir=tmp_path,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+            outbound_text_max_chars=96,
+            outbound_event_max_bytes=4096,
+        ),
+        message_handler=sink,
+    )
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    ws = FakeWebSocket()
+
+    await adapter._handle_chat_send(
+        ws,
+        "chat-truncate",
+        chat_frame(rid="chat-truncate", message="private prompt DUMMY_PROMPT_TOKEN_DO_NOT_USE"),
+        "r1-outbound-truncate",
+    )
+
+    final = ws.frames[2]
+    text = final["payload"]["message"]["content"][0]["text"]
+    logs = serialized_audit_logs(caplog)
+    truncated = next(
+        event for event in audit_events(caplog) if event["event"] == "chat.response_truncated"
+    )
+    final_audit = next(
+        event for event in audit_events(caplog) if event["event"] == "chat.run_final"
+    )
+
+    assert final["payload"]["state"] == "final"
+    assert len(text) <= 96
+    assert "truncated" in text
+    assert final["payload"]["outbound"] == {
+        "truncated": True,
+        "originalChars": len(private_response),
+        "returnedChars": len(text),
+        "maxChars": 96,
+    }
+    assert truncated["original_chars"] == len(private_response)
+    assert truncated["returned_chars"] == len(text)
+    assert truncated["outbound_text_max_chars"] == 96
+    assert truncated["device_id_hash"].startswith("sha256:")
+    assert final_audit["response_chars"] == len(private_response)
+    assert final_audit["response_sent_chars"] == len(text)
+    assert final_audit["response_truncated"] is True
+    assert "assistant private output" not in logs
+    assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in logs
+    assert "private prompt" not in logs
+    assert "DUMMY_PROMPT_TOKEN_DO_NOT_USE" not in logs
+    assert "r1-outbound-truncate" not in logs
+
+
+@pytest.mark.asyncio
+async def test_chat_final_event_over_byte_cap_returns_safe_error_without_output_dump(
+    tmp_path,
+    caplog,
+):
+    private_response = "oversized output DUMMY_SECRET_TOKEN_DO_NOT_USE " + ("x" * 2000)
+    sink = FixedResponseHermesSink(private_response)
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token=STRONG_GATEWAY_TOKEN,
+            state_dir=tmp_path,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+            outbound_text_max_chars=1000,
+            outbound_event_max_bytes=320,
+        ),
+        message_handler=sink,
+    )
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    ws = FakeWebSocket()
+
+    await adapter._handle_chat_send(
+        ws,
+        "chat-event-cap",
+        chat_frame(rid="chat-event-cap", message="large response please"),
+        "r1-outbound-event-cap",
+    )
+
+    error = ws.frames[2]
+    serialized = json.dumps(error)
+    logs = serialized_audit_logs(caplog)
+    outbound_error = next(
+        event for event in audit_events(caplog) if event["event"] == "chat.outbound_event_too_large"
+    )
+    run_error = next(event for event in audit_events(caplog) if event["event"] == "chat.run_error")
+
+    assert error["type"] == "event"
+    assert error["event"] == "chat"
+    assert error["payload"] == {
+        "runId": "run-chat-event-cap",
+        "sessionKey": "main",
+        "seq": 2,
+        "state": "error",
+        "error": {
+            "code": "CHAT_OUTPUT_TOO_LARGE",
+            "message": "chat response exceeded the outbound size limit",
+        },
+    }
+    assert len(serialized.encode("utf-8")) <= 320
+    assert outbound_error["outbound_event_max_bytes"] == 320
+    assert outbound_error["response_chars"] == len(private_response)
+    assert outbound_error["candidate_event_bytes"] > 320
+    assert run_error["error_code"] == "CHAT_OUTPUT_TOO_LARGE"
+    assert run_error["safe_message"] == "chat response exceeded the outbound size limit"
+    assert "oversized output" not in serialized
+    assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in serialized
+    assert "oversized output" not in logs
+    assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in logs
+    assert "r1-outbound-event-cap" not in logs
+
+
+@pytest.mark.asyncio
+async def test_chat_events_bound_untrusted_session_key_metadata(tmp_path):
+    private_session_key = "session-DUMMY_SECRET_TOKEN_DO_NOT_USE-" + ("x" * 300)
+    sink = FixedResponseHermesSink("ok")
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            gateway_token=STRONG_GATEWAY_TOKEN,
+            state_dir=tmp_path,
+            per_device_concurrency=2,
+            global_concurrency=2,
+            rate_limit_messages=10,
+            outbound_event_max_bytes=512,
+        ),
+        message_handler=sink,
+    )
+    ws = FakeWebSocket()
+
+    await adapter._handle_chat_send(
+        ws,
+        "chat-long-session",
+        chat_frame(rid="chat-long-session", message="hello", session_key=private_session_key),
+        "r1-long-session",
+    )
+
+    serialized = json.dumps(ws.frames)
+    assert private_session_key not in serialized
+    assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in serialized
+    assert ws.frames[1]["payload"]["sessionKey"].startswith("session-sha256-")
+    assert ws.frames[2]["payload"]["sessionKey"].startswith("session-sha256-")
+    assert len(json.dumps(ws.frames[2]).encode("utf-8")) <= 512
 
 
 @pytest.mark.asyncio
@@ -3549,6 +3745,17 @@ def test_config_from_env_reads_global_concurrency(monkeypatch, tmp_path):
     assert config.chat_heartbeat_interval_seconds == 7
 
 
+def test_config_from_env_reads_outbound_caps(monkeypatch, tmp_path):
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
+    monkeypatch.setenv("R1_HERMES_OUTBOUND_TEXT_MAX_CHARS", "123")
+    monkeypatch.setenv("R1_HERMES_OUTBOUND_EVENT_MAX_BYTES", "4567")
+
+    config = R1HermesConfig.from_env(state_dir=tmp_path)
+
+    assert config.outbound_text_max_chars == 123
+    assert config.outbound_event_max_bytes == 4567
+
+
 def test_config_rejects_invalid_concurrency(tmp_path):
     with pytest.raises(ValueError, match="global_concurrency"):
         R1HermesAdapter(
@@ -3556,6 +3763,27 @@ def test_config_rejects_invalid_concurrency(tmp_path):
                 gateway_token=STRONG_GATEWAY_TOKEN,
                 state_dir=tmp_path,
                 global_concurrency=0,
+            ),
+            message_handler=FakeHermesSink(),
+        )
+
+
+def test_config_rejects_invalid_outbound_caps(tmp_path):
+    with pytest.raises(ValueError, match="outbound_text_max_chars"):
+        R1HermesAdapter(
+            R1HermesConfig(
+                gateway_token=STRONG_GATEWAY_TOKEN,
+                state_dir=tmp_path,
+                outbound_text_max_chars=0,
+            ),
+            message_handler=FakeHermesSink(),
+        )
+    with pytest.raises(ValueError, match="outbound_event_max_bytes"):
+        R1HermesAdapter(
+            R1HermesConfig(
+                gateway_token=STRONG_GATEWAY_TOKEN,
+                state_dir=tmp_path,
+                outbound_event_max_bytes=0,
             ),
             message_handler=FakeHermesSink(),
         )

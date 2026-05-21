@@ -37,6 +37,7 @@ from .adapter import (
 )
 from .hermes_runner import HERMES_SMOKE_QUERY, HermesCliRunner, run_hermes_smoke
 from .media import DEFAULT_MEDIA_MAX_BYTES, DEFAULT_MEDIA_TTL_SECONDS
+from .outbound import DEFAULT_OUTBOUND_EVENT_MAX_BYTES, DEFAULT_OUTBOUND_TEXT_MAX_CHARS
 from .qr import build_pairing_payload, write_qr_png
 from .r1_client import R1ProbeClient
 from .token_policy import (
@@ -226,6 +227,28 @@ def add_server_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=int(os.environ.get("R1_HERMES_MEDIA_TTL_SECONDS", str(DEFAULT_MEDIA_TTL_SECONDS))),
         help="Seconds before stale private media uploads are pruned",
+    )
+    parser.add_argument(
+        "--outbound-text-max-chars",
+        type=int,
+        default=int(
+            os.environ.get(
+                "R1_HERMES_OUTBOUND_TEXT_MAX_CHARS",
+                str(DEFAULT_OUTBOUND_TEXT_MAX_CHARS),
+            )
+        ),
+        help="Maximum assistant text characters included in one R1 outbound chat event",
+    )
+    parser.add_argument(
+        "--outbound-event-max-bytes",
+        type=int,
+        default=int(
+            os.environ.get(
+                "R1_HERMES_OUTBOUND_EVENT_MAX_BYTES",
+                str(DEFAULT_OUTBOUND_EVENT_MAX_BYTES),
+            )
+        ),
+        help="Maximum serialized bytes for one R1 outbound WebSocket event",
     )
     add_device_expiry_args(parser)
 
@@ -514,6 +537,8 @@ def main() -> None:
                 chat_heartbeat_interval_seconds=(
                     args.heartbeat_interval if args.command == "hermes" else None
                 ),
+                outbound_text_max_chars=args.outbound_text_max_chars,
+                outbound_event_max_bytes=args.outbound_event_max_bytes,
                 media_max_file_bytes=args.media_max_file_bytes,
                 media_ttl_seconds=args.media_ttl_seconds,
                 allow_remote_health=args.allow_remote_health,
@@ -537,6 +562,7 @@ def main() -> None:
                 toolsets=args.toolsets or None,
                 continue_sessions=not args.no_continue,
                 allow_high_impact_toolsets=args.allow_high_impact_toolsets,
+                output_max_chars=args.outbound_text_max_chars,
             )
         try:
             adapter = R1HermesAdapter(config, message_handler=message_handler)

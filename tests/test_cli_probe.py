@@ -761,6 +761,10 @@ def test_serve_command_passes_concurrency_options(monkeypatch, tmp_path):
             "30",
             "--authenticated-max-lifetime-seconds",
             "600",
+            "--outbound-text-max-chars",
+            "333",
+            "--outbound-event-max-bytes",
+            "4444",
         ],
     )
 
@@ -774,6 +778,8 @@ def test_serve_command_passes_concurrency_options(monkeypatch, tmp_path):
     assert captured["config"].authenticated_per_device_connection_limit == 1
     assert captured["config"].authenticated_idle_timeout_seconds == 30
     assert captured["config"].authenticated_max_lifetime_seconds == 600
+    assert captured["config"].outbound_text_max_chars == 333
+    assert captured["config"].outbound_event_max_bytes == 4444
 
 
 def test_hermes_command_reads_concurrency_from_env(monkeypatch, tmp_path):
@@ -801,6 +807,8 @@ def test_hermes_command_reads_concurrency_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("R1_HERMES_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT", "4")
     monkeypatch.setenv("R1_HERMES_AUTHENTICATED_IDLE_TIMEOUT_SECONDS", "45")
     monkeypatch.setenv("R1_HERMES_AUTHENTICATED_MAX_LIFETIME_SECONDS", "900")
+    monkeypatch.setenv("R1_HERMES_OUTBOUND_TEXT_MAX_CHARS", "777")
+    monkeypatch.setenv("R1_HERMES_OUTBOUND_EVENT_MAX_BYTES", "8888")
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -823,8 +831,11 @@ def test_hermes_command_reads_concurrency_from_env(monkeypatch, tmp_path):
     assert captured["config"].authenticated_per_device_connection_limit == 4
     assert captured["config"].authenticated_idle_timeout_seconds == 45
     assert captured["config"].authenticated_max_lifetime_seconds == 900
+    assert captured["config"].outbound_text_max_chars == 777
+    assert captured["config"].outbound_event_max_bytes == 8888
     assert isinstance(captured["message_handler"], cli.HermesCliRunner)
     assert captured["message_handler"].timeout_seconds == 240
+    assert captured["message_handler"].output_max_chars == 777
 
 
 def test_hermes_command_timeout_flag_configures_gateway_and_runner(monkeypatch, tmp_path):
@@ -862,6 +873,43 @@ def test_hermes_command_timeout_flag_configures_gateway_and_runner(monkeypatch, 
     assert captured["config"].chat_heartbeat_interval_seconds == 3
     assert isinstance(captured["message_handler"], cli.HermesCliRunner)
     assert captured["message_handler"].timeout_seconds == 90
+
+
+def test_hermes_command_outbound_cap_flags_configure_gateway_and_runner(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeAdapter:
+        def __init__(self, config, *, message_handler):
+            captured["config"] = config
+            captured["message_handler"] = message_handler
+
+    async def fake_run_forever(adapter, *, ready_file=None):
+        captured["adapter"] = adapter
+        captured["ready_file"] = ready_file
+
+    monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
+    monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "hermes",
+            "--state-dir",
+            str(tmp_path),
+            "--outbound-text-max-chars",
+            "321",
+            "--outbound-event-max-bytes",
+            "6543",
+        ],
+    )
+
+    cli.main()
+
+    assert captured["config"].outbound_text_max_chars == 321
+    assert captured["config"].outbound_event_max_bytes == 6543
+    assert isinstance(captured["message_handler"], cli.HermesCliRunner)
+    assert captured["message_handler"].output_max_chars == 321
 
 
 def test_hermes_command_allows_safe_and_web_toolsets(monkeypatch, tmp_path):

@@ -212,7 +212,7 @@ systemctl --user edit r1-hermes.service
 ```ini
 [Service]
 ExecStart=
-ExecStart=/absolute/path/to/r1-hermes hermes --host ${R1_HERMES_HOST} --port ${R1_HERMES_PORT} --state-dir %S/r1-hermes --ready-file %t/r1-hermes/ready --toolsets ${R1_HERMES_TOOLSETS} --timeout ${R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS} --heartbeat-interval ${R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS} --global-concurrency ${R1_HERMES_GLOBAL_CONCURRENCY} --per-device-concurrency ${R1_HERMES_PER_DEVICE_CONCURRENCY}
+ExecStart=/absolute/path/to/r1-hermes hermes --host ${R1_HERMES_HOST} --port ${R1_HERMES_PORT} --state-dir %S/r1-hermes --ready-file %t/r1-hermes/ready --toolsets ${R1_HERMES_TOOLSETS} --timeout ${R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS} --heartbeat-interval ${R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS} --global-concurrency ${R1_HERMES_GLOBAL_CONCURRENCY} --per-device-concurrency ${R1_HERMES_PER_DEVICE_CONCURRENCY} --outbound-text-max-chars ${R1_HERMES_OUTBOUND_TEXT_MAX_CHARS} --outbound-event-max-bytes ${R1_HERMES_OUTBOUND_EVENT_MAX_BYTES}
 ```
 
 Set `R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS` to the maximum number of seconds an authenticated R1
@@ -220,6 +220,11 @@ Set `R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS` to the maximum number of seconds an aut
 CLI for older env files. Set `R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS` for the fixed `running`
 heartbeat cadence while Hermes is active. Heartbeats are deliberately generic and must not carry
 tool stderr, prompts, bearer tokens, QR payloads, or raw device IDs.
+
+Set `R1_HERMES_OUTBOUND_TEXT_MAX_CHARS` and `R1_HERMES_OUTBOUND_EVENT_MAX_BYTES` only when the
+default outbound response caps are too small for a reviewed R1 UX. Oversized Hermes stdout and
+native proactive sends are replaced with a fixed truncated notice or `CHAT_OUTPUT_TOO_LARGE`; audit
+logs record lengths and byte counts only, never response bodies.
 
 ## Enable
 

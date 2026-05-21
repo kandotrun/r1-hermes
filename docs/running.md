@@ -96,7 +96,9 @@ r1-hermes hermes \
   --authenticated-idle-timeout-seconds 300 \
   --authenticated-max-lifetime-seconds 3600 \
   --global-concurrency 2 \
-  --per-device-concurrency 1
+  --per-device-concurrency 1 \
+  --outbound-text-max-chars 8192 \
+  --outbound-event-max-bytes 65536
 ```
 
 The same chat-run settings can be supplied through `R1_HERMES_GLOBAL_CONCURRENCY` and
@@ -129,6 +131,25 @@ the run exceeded the R1 gateway timeout limit. The gateway sends generic `runnin
 events every 15 seconds while Hermes is still active; tune that cadence with `--heartbeat-interval`
 or `R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS`. Heartbeats intentionally expose only run/session
 metadata and a fixed status string, never tool stderr, prompts, tokens, or QR payload material.
+
+Outbound R1 event sizes are capped separately from input and WebSocket receive limits. The default
+text cap is `8192` characters per assistant/proactive response, configurable with
+`--outbound-text-max-chars` or `R1_HERMES_OUTBOUND_TEXT_MAX_CHARS`. The default serialized event cap
+is `65536` bytes, configurable with `--outbound-event-max-bytes` or
+`R1_HERMES_OUTBOUND_EVENT_MAX_BYTES`. If Hermes stdout or a native proactive send exceeds the text
+cap, the gateway sends a fixed truncated notice plus safe metadata with original and returned
+lengths; it does not send a prefix of the private output. If the bounded event would still exceed
+the byte cap, the R1 receives `CHAT_OUTPUT_TOO_LARGE` with the fixed message `chat response exceeded
+the outbound size limit`. Audit events such as `hermes.stdout_truncated`, `chat.response_truncated`,
+`chat.outbound_event_too_large`, `native.send_truncated`, and `native.outbound_event_too_large`
+contain only lengths, byte counts, limits, durations, and hashed identifiers. For large Vision or
+tool-heavy responses, prefer keeping the defaults and asking Hermes to summarize; raise the caps only
+after confirming the R1 client remains usable and the host can absorb the memory budget.
+
+Outbound chat lifecycle metadata also normalizes unusually long or secret-shaped `runId` and
+`sessionKey` values to short hashes before sending them to the client. Normal short IDs used by the
+probe and Rabbit/OpenClaw compatibility paths remain unchanged, but client-supplied identifiers must
+not be treated as a place to carry private material.
 
 The gateway rejects wildcard bind hosts such as `0.0.0.0`, `::`, and numeric aliases for all
 interfaces unless you explicitly acknowledge the exposure with `--allow-public-bind` or
@@ -475,6 +496,9 @@ Useful event names include:
 - `chat.run_started`, `chat.run_final`, and `chat.run_error` for authenticated run lifecycle.
 - R1-visible heartbeat frames use `event: chat`, `state: running`, and `heartbeat: true`; they are
   not audit logs and contain no prompt or tool output.
+- `hermes.stdout_truncated`, `chat.response_truncated`, `chat.outbound_event_too_large`,
+  `native.send_truncated`, and `native.outbound_event_too_large` for outbound response bounding;
+  these contain lengths and limits only, not output text.
 - `frame.shape` at `INFO` only when frame-shape diagnostics are explicitly enabled.
 - `hermes.subprocess_failed` and `hermes.subprocess_timeout` for Hermes CLI failures.
 - `device.revoke`, `device.revoke_all`, and `device.cleanup` for local device-state operations.

@@ -86,6 +86,25 @@ def test_docs_cover_r1_timeout_and_heartbeat_policy() -> None:
         assert required in combined
 
 
+def test_docs_cover_outbound_response_bounding_policy() -> None:
+    combined = "\n".join(_read(doc) for doc in TARGET_DOCS)
+
+    for required in (
+        "R1_HERMES_OUTBOUND_TEXT_MAX_CHARS",
+        "R1_HERMES_OUTBOUND_EVENT_MAX_BYTES",
+        "--outbound-text-max-chars",
+        "--outbound-event-max-bytes",
+        "CHAT_OUTPUT_TOO_LARGE",
+        "chat response exceeded",
+        "the outbound size limit",
+        "hermes.stdout_truncated",
+        "chat.response_truncated",
+        "native.outbound_event_too_large",
+        "never response bodies",
+    ):
+        assert required in combined
+
+
 def test_systemd_docs_cover_tailscale_serve_and_proxy_checks() -> None:
     systemd = _read(SYSTEMD)
 

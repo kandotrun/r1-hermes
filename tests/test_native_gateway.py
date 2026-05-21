@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 import pytest
 import pytest_asyncio
@@ -19,6 +20,18 @@ class FakeGatewayPipeline:
     async def __call__(self, event):
         self.events.append(event)
         return self.response_text
+
+
+def audit_events(caplog):
+    return [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.name == "r1_hermes.audit"
+    ]
+
+
+def serialized_audit_logs(caplog) -> str:
+    return "\n".join(record.getMessage() for record in caplog.records)
 
 
 @pytest_asyncio.fixture
@@ -415,3 +428,190 @@ async def test_native_send_is_noop_without_active_socket_and_emits_on_active_ses
         )
         is False
     )
+
+
+@pytest.mark.asyncio
+async def test_native_send_truncates_oversized_text_without_output_dump(
+    unused_tcp_port,
+    tmp_path,
+    caplog,
+):
+    pipeline = FakeGatewayPipeline()
+    port = unused_tcp_port
+    adapter = R1NativeGatewayAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token=STRONG_GATEWAY_TOKEN,
+            state_dir=tmp_path,
+            outbound_text_max_chars=80,
+            outbound_event_max_bytes=4096,
+        ),
+        gateway_message_handler=pipeline,
+    )
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    await adapter.start()
+    session, ws = await ws_connect(f"http://127.0.0.1:{port}")
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-1",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
+                    "device": {"id": "r1-native-truncate"},
+                },
+            }
+        )
+        assert (await receive_json(ws))["ok"] is True
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "chat-1",
+                "method": "chat.send",
+                "params": {
+                    "message": "activate session",
+                    "sessionKey": "main",
+                    "idempotencyKey": "native-truncate-run",
+                },
+            }
+        )
+        assert (await receive_json(ws))["ok"] is True
+        assert (await receive_json(ws))["payload"]["state"] == "started"
+        assert (await receive_json(ws))["payload"]["state"] == "final"
+
+        private_text = "native private output DUMMY_SECRET_TOKEN_DO_NOT_USE " + ("x" * 120)
+        assert (
+            await adapter.send_text(
+                device_id="r1-native-truncate",
+                session_key="main",
+                text=private_text,
+                run_id="native-truncate-1",
+            )
+            is True
+        )
+
+        event = await receive_json(ws)
+        text = event["payload"]["message"]["content"][0]["text"]
+        logs = serialized_audit_logs(caplog)
+        audit = next(
+            event for event in audit_events(caplog) if event["event"] == "native.send_truncated"
+        )
+
+        assert event["payload"]["state"] == "final"
+        assert len(text) <= 80
+        assert "truncated" in text
+        assert event["payload"]["outbound"] == {
+            "truncated": True,
+            "originalChars": len(private_text),
+            "returnedChars": len(text),
+            "maxChars": 80,
+        }
+        assert audit["original_chars"] == len(private_text)
+        assert audit["returned_chars"] == len(text)
+        assert audit["device_id_hash"].startswith("sha256:")
+        assert "native private output" not in json.dumps(event)
+        assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in json.dumps(event)
+        assert "native private output" not in logs
+        assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in logs
+        assert "r1-native-truncate" not in logs
+    finally:
+        await ws.close()
+        await session.close()
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_native_send_over_event_cap_returns_safe_error_without_text_leak(
+    unused_tcp_port,
+    tmp_path,
+    caplog,
+):
+    pipeline = FakeGatewayPipeline()
+    port = unused_tcp_port
+    adapter = R1NativeGatewayAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token=STRONG_GATEWAY_TOKEN,
+            state_dir=tmp_path,
+            outbound_text_max_chars=1000,
+            outbound_event_max_bytes=320,
+        ),
+        gateway_message_handler=pipeline,
+    )
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    await adapter.start()
+    session, ws = await ws_connect(f"http://127.0.0.1:{port}")
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-1",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
+                    "device": {"id": "r1-native-event-cap"},
+                },
+            }
+        )
+        assert (await receive_json(ws))["ok"] is True
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "chat-1",
+                "method": "chat.send",
+                "params": {
+                    "message": "activate session",
+                    "sessionKey": "main",
+                    "idempotencyKey": "native-event-cap-run",
+                },
+            }
+        )
+        assert (await receive_json(ws))["ok"] is True
+        assert (await receive_json(ws))["payload"]["state"] == "started"
+        assert (await receive_json(ws))["payload"]["state"] == "final"
+
+        private_text = "native huge output DUMMY_SECRET_TOKEN_DO_NOT_USE " + ("x" * 2000)
+        assert (
+            await adapter.send_text(
+                device_id="r1-native-event-cap",
+                session_key="main",
+                text=private_text,
+                run_id="native-event-cap-1",
+            )
+            is True
+        )
+
+        event = await receive_json(ws)
+        serialized = json.dumps(event)
+        logs = serialized_audit_logs(caplog)
+        audit = next(
+            event
+            for event in audit_events(caplog)
+            if event["event"] == "native.outbound_event_too_large"
+        )
+
+        assert event["payload"] == {
+            "runId": "native-event-cap-1",
+            "sessionKey": "main",
+            "seq": 1,
+            "state": "error",
+            "error": {
+                "code": "CHAT_OUTPUT_TOO_LARGE",
+                "message": "chat response exceeded the outbound size limit",
+            },
+        }
+        assert len(serialized.encode("utf-8")) <= 320
+        assert audit["outbound_event_max_bytes"] == 320
+        assert audit["response_chars"] == len(private_text)
+        assert audit["candidate_event_bytes"] > 320
+        assert "native huge output" not in serialized
+        assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in serialized
+        assert "native huge output" not in logs
+        assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in logs
+    finally:
+        await ws.close()
+        await session.close()
+        await adapter.stop()

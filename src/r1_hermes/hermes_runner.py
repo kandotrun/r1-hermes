@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from .audit import audit_log, hash_identifier
 from .chat_errors import ChatRunFailedError, ChatRunTimeoutError
+from .outbound import DEFAULT_OUTBOUND_TEXT_MAX_CHARS, bound_outbound_text
 from .toolsets import toolsets_to_cli_arg, validate_toolsets
 
 ProcessFactory = Callable[..., Awaitable[asyncio.subprocess.Process]]
@@ -105,6 +106,7 @@ class HermesCliRunner:
     source: str = "r1-hermes"
     continue_sessions: bool = True
     allow_high_impact_toolsets: bool = False
+    output_max_chars: int = DEFAULT_OUTBOUND_TEXT_MAX_CHARS
     process_factory: ProcessFactory | None = None
 
     def __post_init__(self) -> None:
@@ -173,4 +175,19 @@ class HermesCliRunner:
             raise ChatRunFailedError
 
         output = stdout.decode("utf-8", errors="replace").strip()
-        return output or "Hermes returned an empty response."
+        bounded_output = bound_outbound_text(
+            output or "Hermes returned an empty response.",
+            max_chars=self.output_max_chars,
+        )
+        if bounded_output.truncated:
+            audit_log(
+                "warning",
+                "hermes.stdout_truncated",
+                device_id_hash=hash_identifier(device_id),
+                session_key_hash=hash_identifier(session_key),
+                stdout_bytes=len(stdout or b""),
+                original_chars=bounded_output.original_chars,
+                returned_chars=bounded_output.returned_chars,
+                output_max_chars=bounded_output.max_chars,
+            )
+        return bounded_output.text

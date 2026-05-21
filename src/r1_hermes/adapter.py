@@ -26,7 +26,7 @@ from typing import Any, Sequence
 from aiohttp import WSMsgType, web
 
 from .audit import audit_log, hash_identifier
-from .chat_errors import ChatRunError, ChatRunTimeoutError
+from .chat_errors import ChatOutputTooLargeError, ChatRunError, ChatRunTimeoutError
 from .frame_shape import build_frame_shape_log_fields
 from .media import (
     DEFAULT_MEDIA_MAX_BYTES,
@@ -34,6 +34,15 @@ from .media import (
     MediaUploadError,
     MediaUploadStore,
     StoredMediaFile,
+)
+from .outbound import (
+    DEFAULT_OUTBOUND_EVENT_MAX_BYTES,
+    DEFAULT_OUTBOUND_TEXT_MAX_CHARS,
+    BoundedText,
+    bound_outbound_identifier,
+    bound_outbound_text,
+    event_size_bytes,
+    truncated_outbound_text,
 )
 from .payloads import (
     ImageAttachment,
@@ -109,6 +118,8 @@ class R1HermesConfig:
     idempotency_cache_ttl_seconds: int = DEFAULT_IDEMPOTENCY_CACHE_TTL_SECONDS
     chat_run_timeout_seconds: float = DEFAULT_CHAT_RUN_TIMEOUT_SECONDS
     chat_heartbeat_interval_seconds: float = DEFAULT_CHAT_HEARTBEAT_INTERVAL_SECONDS
+    outbound_text_max_chars: int = DEFAULT_OUTBOUND_TEXT_MAX_CHARS
+    outbound_event_max_bytes: int = DEFAULT_OUTBOUND_EVENT_MAX_BYTES
     media_max_file_bytes: int = DEFAULT_MEDIA_MAX_BYTES
     media_ttl_seconds: int = DEFAULT_MEDIA_TTL_SECONDS
     allow_remote_health: bool = False
@@ -150,6 +161,8 @@ class R1HermesConfig:
         idempotency_cache_ttl_seconds: int | None = None,
         chat_run_timeout_seconds: float | None = None,
         chat_heartbeat_interval_seconds: float | None = None,
+        outbound_text_max_chars: int | None = None,
+        outbound_event_max_bytes: int | None = None,
         media_max_file_bytes: int | None = None,
         media_ttl_seconds: int | None = None,
         allow_remote_health: bool | None = None,
@@ -298,6 +311,22 @@ class R1HermesConfig:
                 else os.environ.get(
                     "R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS",
                     str(DEFAULT_CHAT_HEARTBEAT_INTERVAL_SECONDS),
+                )
+            ),
+            outbound_text_max_chars=int(
+                outbound_text_max_chars
+                if outbound_text_max_chars is not None
+                else os.environ.get(
+                    "R1_HERMES_OUTBOUND_TEXT_MAX_CHARS",
+                    str(DEFAULT_OUTBOUND_TEXT_MAX_CHARS),
+                )
+            ),
+            outbound_event_max_bytes=int(
+                outbound_event_max_bytes
+                if outbound_event_max_bytes is not None
+                else os.environ.get(
+                    "R1_HERMES_OUTBOUND_EVENT_MAX_BYTES",
+                    str(DEFAULT_OUTBOUND_EVENT_MAX_BYTES),
                 )
             ),
             media_max_file_bytes=int(
@@ -1533,7 +1562,7 @@ class R1HermesAdapter:
                 "type": "res",
                 "id": rid,
                 "ok": True,
-                "payload": {"runId": run_id, "status": "started"},
+                "payload": {"runId": _outbound_run_id(run_id), "status": "started"},
             }
             if not await _send_json_if_open(ws, started_ack):
                 self._record_chat_delivery_lost(
@@ -1555,8 +1584,8 @@ class R1HermesAdapter:
                 "type": "event",
                 "event": "chat",
                 "payload": {
-                    "runId": run_id,
-                    "sessionKey": session_key,
+                    "runId": _outbound_run_id(run_id),
+                    "sessionKey": _outbound_session_key(session_key),
                     "seq": 1,
                     "state": "started",
                 },
@@ -1691,8 +1720,14 @@ class R1HermesAdapter:
                 )
             return
 
-        completed_event = _chat_final_event(
-            run_id, session_key, response, seq=_next_chat_seq(seq_ref)
+        completed_event = _bounded_chat_final_event(
+            run_id,
+            session_key,
+            response,
+            seq=_next_chat_seq(seq_ref),
+            config=self.config,
+            device_id=device_id,
+            started_at=started_at,
         )
         if not await _send_json_if_open(ws, completed_event):
             self._record_chat_delivery_lost(
@@ -1712,6 +1747,32 @@ class R1HermesAdapter:
                 )
             return
 
+        if _chat_event_state(completed_event) == "error":
+            event_error = _chat_event_error(completed_event)
+            audit_log(
+                "error",
+                "chat.run_error",
+                device_id_hash=hash_identifier(device_id),
+                session_key_hash=hash_identifier(session_key),
+                run_id_hash=hash_identifier(run_id),
+                error_code=event_error.get("code", "CHAT_RUN_FAILED"),
+                safe_message=event_error.get("message", "chat run failed"),
+                **_attachment_audit_fields(attachments),
+                response_chars=len(str(response or "")),
+                response_sent_chars=_chat_response_text_chars(completed_event),
+                response_truncated=False,
+                duration_ms=_elapsed_ms(started_at),
+            )
+            if idempotency_key:
+                self._idempotency_cache.complete(
+                    device_id=device_id,
+                    session_key=session_key,
+                    idempotency_key=idempotency_key,
+                    run_id=run_id,
+                    final_event=completed_event,
+                )
+            return
+
         audit_log(
             "info",
             "chat.run_final",
@@ -1720,6 +1781,8 @@ class R1HermesAdapter:
             run_id_hash=hash_identifier(run_id),
             **_attachment_audit_fields(attachments),
             response_chars=len(str(response or "")),
+            response_sent_chars=_chat_response_text_chars(completed_event),
+            response_truncated=bool(completed_event.get("payload", {}).get("outbound", {})),
             duration_ms=_elapsed_ms(started_at),
         )
         if idempotency_key:
@@ -1788,7 +1851,7 @@ class R1HermesAdapter:
                 "id": rid,
                 "ok": True,
                 "payload": {
-                    "runId": entry.run_id,
+                    "runId": _outbound_run_id(entry.run_id),
                     "status": status,
                     "duplicate": True,
                 },
@@ -2001,6 +2064,10 @@ def _validate_config(config: R1HermesConfig) -> None:
         raise ValueError("chat_run_timeout_seconds must be greater than 0")
     if config.chat_heartbeat_interval_seconds <= 0:
         raise ValueError("chat_heartbeat_interval_seconds must be greater than 0")
+    if config.outbound_text_max_chars < 1:
+        raise ValueError("outbound_text_max_chars must be at least 1")
+    if config.outbound_event_max_bytes < 1:
+        raise ValueError("outbound_event_max_bytes must be at least 1")
     if config.media_max_file_bytes < 1:
         raise ValueError("media_max_file_bytes must be at least 1")
     if config.media_ttl_seconds < 1:
@@ -2009,7 +2076,8 @@ def _validate_config(config: R1HermesConfig) -> None:
 
 def _websocket_max_message_size(config: R1HermesConfig) -> int:
     media_budget = max(0, config.media_max_file_bytes * 2)
-    return max(config.max_message_chars * 4, media_budget)
+    outbound_budget = max(0, config.outbound_event_max_bytes * 2)
+    return max(config.max_message_chars * 4, media_budget, outbound_budget)
 
 
 def _compose_hermes_prompt(text: str, media_files: tuple[StoredMediaFile, ...]) -> str:
@@ -2114,8 +2182,8 @@ def _chat_final_event(
         "type": "event",
         "event": "chat",
         "payload": {
-            "runId": run_id,
-            "sessionKey": session_key,
+            "runId": _outbound_run_id(run_id),
+            "sessionKey": _outbound_session_key(session_key),
             "seq": seq,
             "state": "final",
             "message": {
@@ -2127,13 +2195,115 @@ def _chat_final_event(
     }
 
 
+def _bounded_chat_final_event(
+    run_id: str,
+    session_key: str,
+    response: str,
+    *,
+    seq: int = 2,
+    config: R1HermesConfig,
+    device_id: str,
+    started_at: float,
+) -> dict[str, Any]:
+    bounded = bound_outbound_text(response, max_chars=config.outbound_text_max_chars)
+    event = _chat_final_event(run_id, session_key, bounded.text, seq=seq)
+    if bounded.truncated:
+        event["payload"]["outbound"] = _outbound_truncated_payload(bounded)
+        audit_log(
+            "warning",
+            "chat.response_truncated",
+            device_id_hash=hash_identifier(device_id),
+            session_key_hash=hash_identifier(session_key),
+            run_id_hash=hash_identifier(run_id),
+            original_chars=bounded.original_chars,
+            returned_chars=bounded.returned_chars,
+            outbound_text_max_chars=bounded.max_chars,
+            duration_ms=_elapsed_ms(started_at),
+        )
+
+    candidate_event_bytes = event_size_bytes(event)
+    if candidate_event_bytes <= config.outbound_event_max_bytes:
+        return event
+
+    error = ChatOutputTooLargeError()
+    error_event = _chat_error_event(run_id, session_key, error, seq=seq)
+    if event_size_bytes(error_event) > config.outbound_event_max_bytes:
+        error = ChatOutputTooLargeError(
+            truncated_outbound_text(max_chars=config.outbound_text_max_chars)
+        )
+        error_event = _chat_error_event(run_id, session_key, error, seq=seq)
+    audit_log(
+        "warning",
+        "chat.outbound_event_too_large",
+        device_id_hash=hash_identifier(device_id),
+        session_key_hash=hash_identifier(session_key),
+        run_id_hash=hash_identifier(run_id),
+        response_chars=len(str(response or "")),
+        response_sent_chars=bounded.returned_chars,
+        response_truncated=bounded.truncated,
+        candidate_event_bytes=candidate_event_bytes,
+        error_event_bytes=event_size_bytes(error_event),
+        outbound_event_max_bytes=config.outbound_event_max_bytes,
+        duration_ms=_elapsed_ms(started_at),
+    )
+    return error_event
+
+
+def _outbound_truncated_payload(bounded: BoundedText) -> dict[str, Any]:
+    return {
+        "truncated": True,
+        "originalChars": bounded.original_chars,
+        "returnedChars": bounded.returned_chars,
+        "maxChars": bounded.max_chars,
+    }
+
+
+def _outbound_run_id(run_id: str) -> str:
+    return bound_outbound_identifier(run_id, fallback_prefix="run")
+
+
+def _outbound_session_key(session_key: str) -> str:
+    return bound_outbound_identifier(session_key, fallback_prefix="session")
+
+
+def _chat_response_text_chars(event: dict[str, Any]) -> int:
+    content = event.get("payload", {}).get("message", {}).get("content", [])
+    if not isinstance(content, Sequence):
+        return 0
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "text":
+            continue
+        text = item.get("text")
+        return len(text) if isinstance(text, str) else 0
+    return 0
+
+
+def _chat_event_state(event: dict[str, Any]) -> str:
+    state = event.get("payload", {}).get("state")
+    return state if isinstance(state, str) else ""
+
+
+def _chat_event_error(event: dict[str, Any]) -> dict[str, str]:
+    error = event.get("payload", {}).get("error", {})
+    if not isinstance(error, dict):
+        return {}
+    code = error.get("code")
+    message = error.get("message")
+    return {
+        "code": code if isinstance(code, str) else "CHAT_RUN_FAILED",
+        "message": message if isinstance(message, str) else "chat run failed",
+    }
+
+
 def _chat_running_event(run_id: str, session_key: str, *, seq: int) -> dict[str, Any]:
     return {
         "type": "event",
         "event": "chat",
         "payload": {
-            "runId": run_id,
-            "sessionKey": session_key,
+            "runId": _outbound_run_id(run_id),
+            "sessionKey": _outbound_session_key(session_key),
             "seq": seq,
             "state": "running",
             "heartbeat": True,
@@ -2150,8 +2320,8 @@ def _chat_error_event(
         "type": "event",
         "event": "chat",
         "payload": {
-            "runId": run_id,
-            "sessionKey": session_key,
+            "runId": _outbound_run_id(run_id),
+            "sessionKey": _outbound_session_key(session_key),
             "seq": seq,
             "state": "error",
             "error": {"code": error.code, "message": error.safe_message},
