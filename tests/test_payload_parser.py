@@ -1,9 +1,11 @@
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
 from r1_hermes.payloads import (
+    ImageAttachment,
     PayloadParseError,
     parse_chat_send_params,
     parse_connect_params,
@@ -111,10 +113,9 @@ def test_chat_variant_fixtures_are_normalized_without_repr_secret_leakage(
     ("fixture_name", "dummy_media"),
     [
         ("chat_send_mixed_text_audio_content.json", "DUMMY_BINARY_DATA_OMITTED"),
-        ("chat_send_media_only_image_content.json", "DUMMY_BINARY_DATA_OMITTED"),
     ],
 )
-def test_chat_media_fixtures_raise_safe_unsupported_media_without_leaking_payload(
+def test_chat_audio_media_fixture_raises_safe_unsupported_media_without_leaking_payload(
     fixture_name,
     dummy_media,
 ):
@@ -128,6 +129,126 @@ def test_chat_media_fixtures_raise_safe_unsupported_media_without_leaking_payloa
     assert dummy_media not in str(exc_info.value)
     assert dummy_media not in repr(exc_info.value)
     assert "DUMMY_DEVICE_TOKEN_DO_NOT_USE" not in repr(exc_info.value)
+
+
+def test_chat_camera_image_fixture_is_parsed_as_safe_attachment_metadata():
+    frame = load_fixture("chat_send_media_only_image_content.json")
+
+    request = parse_chat_send_params(request_params(frame))
+
+    assert request.message == ""
+    assert request.session_key == "media-main"
+    assert request.idempotency_key == "media-only-run-001"
+    assert request.attachments == (
+        ImageAttachment(
+            mime_type="image/jpeg",
+            source_field="content.data",
+            filename="r1-camera.jpg",
+            extension="jpg",
+            size_bytes=len(b"r1-image"),
+            content_hash=f"sha256:{hashlib.sha256(b'r1-image').hexdigest()[:16]}",
+            source_hash=None,
+            data=b"r1-image",
+            url=None,
+        ),
+    )
+    serialized = repr(request)
+    assert "cjEtaW1hZ2U=" not in serialized
+    assert "data:image" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("params", "expected_mime", "expected_source", "expected_filename", "expected_extension"),
+    [
+        (
+            {
+                "message": "describe",
+                "attachments": [
+                    {
+                        "type": "image",
+                        "mimeType": "image/png",
+                        "filename": "capture.png",
+                        "data": "cjEtaW1hZ2U=",
+                    }
+                ],
+            },
+            "image/png",
+            "attachments.data",
+            "capture.png",
+            "png",
+        ),
+        (
+            {
+                "message": "describe",
+                "media": {"type": "image", "mediaType": "image/webp", "base64": "cjEtaW1hZ2U="},
+            },
+            "image/webp",
+            "media.base64",
+            None,
+            "webp",
+        ),
+        (
+            {"message": "describe", "image": "data:image/png;base64,cjEtaW1hZ2U="},
+            "image/png",
+            "image",
+            None,
+            "png",
+        ),
+        (
+            {
+                "message": "describe",
+                "input_image": {"mime_type": "image/jpeg", "data": "cjEtaW1hZ2U="},
+            },
+            "image/jpeg",
+            "input_image.data",
+            None,
+            "jpg",
+        ),
+        (
+            {"message": "describe", "image_url": "https://example.invalid/r1-camera.jpg"},
+            "image/jpeg",
+            "image_url",
+            "r1-camera.jpg",
+            "jpg",
+        ),
+    ],
+)
+def test_chat_image_variants_are_parsed_as_attachments(
+    params,
+    expected_mime,
+    expected_source,
+    expected_filename,
+    expected_extension,
+):
+    request = parse_chat_send_params({**params, "sessionKey": "image-session"})
+
+    assert request.message == "describe"
+    assert request.session_key == "image-session"
+    assert len(request.attachments) == 1
+    attachment = request.attachments[0]
+    assert attachment.mime_type == expected_mime
+    assert attachment.source_field == expected_source
+    assert attachment.filename == expected_filename
+    assert attachment.extension == expected_extension
+    assert "cjEtaW1hZ2U=" not in repr(attachment)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"message": "describe", "image": "data:image/tiff;base64,cjEtaW1hZ2U="},
+        {"message": "describe", "image": {"mime_type": "image/png", "data": "DUMMY_IMAGE"}},
+        {"message": "describe", "image_url": "file:///tmp/private-camera.jpg"},
+    ],
+)
+def test_chat_image_variants_reject_unsupported_encodings_without_payload_leakage(params):
+    with pytest.raises(PayloadParseError) as exc_info:
+        parse_chat_send_params(params)
+
+    assert exc_info.value.code == "UNSUPPORTED_MEDIA"
+    assert str(exc_info.value) == "unsupported media content"
+    assert "DUMMY_IMAGE" not in str(exc_info.value)
+    assert "cjEtaW1hZ2U=" not in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
@@ -157,7 +278,6 @@ def test_chat_message_is_required(params):
     "params",
     [
         {"message": {"content": [{"type": "input_audio", "data": "DUMMY_AUDIO"}]}},
-        {"message": {"content": [{"type": "input_image", "data": "DUMMY_IMAGE"}]}},
         {"message": {"content": [{"type": "text", "text": "hello", "data": "DUMMY_AUDIO"}]}},
         {"content": [{"type": "image", "data": "DUMMY_IMAGE"}]},
         {"content": [{"text": "hello"}]},

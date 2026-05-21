@@ -28,6 +28,7 @@ SANITIZED_RUN_ID = "sanitized-run-001"
 SANITIZED_FRAME_ID = "sanitized-frame-001"
 SANITIZED_TIMESTAMP_MS = 1710000000000
 DUMMY_BINARY_DATA = "DUMMY_BINARY_DATA_OMITTED"
+DUMMY_IMAGE_BASE64 = "cjEtaW1hZ2U="
 SAFE_TAILSCALE_IP = "100.64.0.10"
 SAFE_TEST_NET_IP = "192.0.2.10"
 SAFE_WS_URL = f"ws://{SAFE_TAILSCALE_IP}:18789/"
@@ -278,7 +279,10 @@ def _validate_chat_request(params: Mapping[str, Any]) -> None:
             _validate_unsupported_media_chat_request(params)
             return
         raise CaptureSchemaError(exc.message) from exc
-    _require_public_text(chat.message, label="chat message")
+    if chat.message:
+        _require_public_text(chat.message, label="chat message")
+    elif not chat.attachments:
+        raise CaptureSchemaError("chat message is required")
     _require_public_text(chat.session_key, label="session key")
     if chat.idempotency_key is not None:
         _require_public_text(chat.idempotency_key, label="run id")
@@ -412,7 +416,16 @@ def _require_public_network_value(value: str) -> None:
 
 
 def _is_public_binary_placeholder(value: str) -> bool:
-    return value == DUMMY_BINARY_DATA or (value.startswith("DUMMY_") and value.endswith("_OMITTED"))
+    if value == DUMMY_BINARY_DATA or (value.startswith("DUMMY_") and value.endswith("_OMITTED")):
+        return True
+    if value.startswith("data:image/"):
+        _media_type, separator, encoded = value.partition(",")
+        encoded = encoded.strip()
+        return bool(
+            separator
+            and (encoded == DUMMY_IMAGE_BASE64 or encoded == DUMMY_BINARY_DATA)
+        )
+    return False
 
 
 def _read_json(path: Path) -> Any:

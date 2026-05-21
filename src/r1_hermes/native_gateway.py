@@ -10,6 +10,7 @@ from typing import Any
 from aiohttp import web
 
 from .adapter import AuthResult, R1HermesAdapter, R1HermesConfig
+from .payloads import ImageAttachment
 from .toolsets import sanitize_platform_toolsets
 
 DEFAULT_NATIVE_PLATFORM = "rabbit_r1"
@@ -35,6 +36,7 @@ class R1GatewayMessageEvent:
     text: str = field(repr=False)
     channel_id: str | None = None
     message_id: str | None = None
+    attachments: tuple[ImageAttachment, ...] = field(default=(), repr=False)
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -56,8 +58,20 @@ class R1GatewayMessageBridge:
             allow_high_impact_toolsets=allow_high_impact_toolsets,
         )
 
-    async def __call__(self, text: str, *, device_id: str, session_key: str) -> str:
-        event = self.to_message_event(text, device_id=device_id, session_key=session_key)
+    async def __call__(
+        self,
+        text: str,
+        *,
+        device_id: str,
+        session_key: str,
+        attachments: tuple[ImageAttachment, ...] = (),
+    ) -> str:
+        event = self.to_message_event(
+            text,
+            device_id=device_id,
+            session_key=session_key,
+            attachments=attachments,
+        )
         result = await self.gateway_message_handler(event)
         return _reply_text(result)
 
@@ -68,6 +82,7 @@ class R1GatewayMessageBridge:
         device_id: str,
         session_key: str,
         message_id: str | None = None,
+        attachments: tuple[ImageAttachment, ...] = (),
     ) -> R1GatewayMessageEvent:
         safe_device_id = _safe_component(device_id)
         safe_session_key = self.normalize_session_key(session_key)
@@ -81,10 +96,12 @@ class R1GatewayMessageBridge:
             text=text,
             channel_id=safe_device_id,
             message_id=message_id,
+            attachments=attachments,
             metadata={
                 "device_id": safe_device_id,
                 "session_key": safe_session_key,
                 "platform_toolsets": self.platform_toolsets,
+                "attachment_count": len(attachments),
             },
         )
 

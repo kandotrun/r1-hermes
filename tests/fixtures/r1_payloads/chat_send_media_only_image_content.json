@@ -6,8 +6,9 @@
     "content": [
       {
         "type": "input_image",
-        "mediaType": "image/png",
-        "data": "DUMMY_BINARY_DATA_OMITTED"
+        "mediaType": "image/jpeg",
+        "filename": "r1-camera.jpg",
+        "data": "data:image/jpeg;base64,cjEtaW1hZ2U="
       }
     ],
     "sessionKey": "media-main",

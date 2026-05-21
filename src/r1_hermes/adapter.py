@@ -18,13 +18,14 @@ from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from aiohttp import WSMsgType, web
 
 from .audit import audit_log, hash_identifier
 from .chat_errors import ChatRunError, ChatRunTimeoutError
 from .payloads import (
+    ImageAttachment,
     PayloadParseError,
     parse_chat_history_params,
     parse_chat_send_params,
@@ -1072,6 +1073,7 @@ class R1HermesAdapter:
             await _send_error(ws, rid, exc.code, exc.message)
             return
         message_text = chat_request.message
+        attachments = chat_request.attachments
         if len(message_text) > self.config.max_message_chars:
             audit_log(
                 "warning",
@@ -1205,6 +1207,7 @@ class R1HermesAdapter:
                 session_key_hash=hash_identifier(session_key),
                 run_id_hash=hash_identifier(run_id),
                 message_chars=len(message_text),
+                **_attachment_audit_fields(attachments),
             )
             heartbeat_task = asyncio.create_task(
                 _emit_chat_heartbeats(
@@ -1219,12 +1222,14 @@ class R1HermesAdapter:
                 name="r1-hermes-chat-heartbeat",
             )
             try:
+                handler_kwargs: dict[str, Any] = {
+                    "device_id": device_id,
+                    "session_key": session_key,
+                }
+                if attachments:
+                    handler_kwargs["attachments"] = attachments
                 response = await asyncio.wait_for(
-                    self.message_handler(
-                        message_text,
-                        device_id=device_id,
-                        session_key=session_key,
-                    ),
+                    self.message_handler(message_text, **handler_kwargs),
                     timeout=self.config.chat_run_timeout_seconds,
                 )
             except asyncio.CancelledError:
@@ -1289,6 +1294,7 @@ class R1HermesAdapter:
                 run_id_hash=hash_identifier(run_id),
                 error_code=error.code,
                 safe_message=error.safe_message,
+                **_attachment_audit_fields(attachments),
                 duration_ms=_elapsed_ms(started_at),
             )
             if not await _send_json_if_open(ws, completed_event):
@@ -1347,6 +1353,7 @@ class R1HermesAdapter:
             device_id_hash=hash_identifier(device_id),
             session_key_hash=hash_identifier(session_key),
             run_id_hash=hash_identifier(run_id),
+            attachment_count=len(attachments),
             response_chars=len(str(response or "")),
             duration_ms=_elapsed_ms(started_at),
         )
@@ -1508,6 +1515,18 @@ def _now_ms() -> int:
 
 def _elapsed_ms(started_at: float) -> int:
     return max(0, int((time.monotonic() - started_at) * 1000))
+
+
+def _attachment_audit_fields(attachments: Sequence[ImageAttachment]) -> dict[str, Any]:
+    return {
+        "attachment_count": len(attachments),
+        "attachment_mime_types": [attachment.mime_type for attachment in attachments],
+        "attachment_sizes": [attachment.size_bytes for attachment in attachments],
+        "attachment_hashes": [
+            attachment.content_hash or attachment.source_hash or "" for attachment in attachments
+        ],
+        "attachment_sources": [attachment.source_field for attachment in attachments],
+    }
 
 
 def _chat_final_event(

@@ -74,6 +74,7 @@ def test_chat_send_becomes_gateway_message_event_without_secret_metadata():
         "device_id": "r1-native-unit",
         "session_key": "main",
         "platform_toolsets": ("safe",),
+        "attachment_count": 0,
     }
     assert "gateway-token" not in repr(event)
     assert "deviceToken" not in repr(event)
