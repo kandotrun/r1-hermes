@@ -18,6 +18,10 @@ WebSocket frames and invokes `hermes chat` for authenticated messages. A native 
 adapter path is prototyped in-library but is not wired into a released Hermes Gateway plugin yet.
 Do not expose either mode directly to the public Internet.
 
+![](./assets/IMG_4766.JPG)
+
+![](./assets/IMG_4769.JPG)
+
 ## Agent handoff
 
 If you hand this repository to Hermes Agent or another autonomous agent and want it to set up the gateway and produce a Rabbit R1 pairing QR, point it at [`AGENTS.md`](AGENTS.md) and [`docs/agent-setup.md`](docs/agent-setup.md). Those files contain the secret-safe setup runbook, probe commands, QR generation steps, and final report template.
