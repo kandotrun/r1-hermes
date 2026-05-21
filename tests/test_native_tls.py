@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 from aiohttp import ClientSession
 
+from .token_fixtures import STRONG_GATEWAY_TOKEN
+
 
 @pytest.mark.asyncio
 async def test_cli_server_accepts_native_tls_and_serves_wss(tmp_path, unused_tcp_port):
@@ -15,7 +17,7 @@ async def test_cli_server_accepts_native_tls_and_serves_wss(tmp_path, unused_tcp
     ready_file = tmp_path / "ready"
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path.cwd() / "src")
-    env["R1_HERMES_GATEWAY_TOKEN"] = "server-token"
+    env["R1_HERMES_GATEWAY_TOKEN"] = STRONG_GATEWAY_TOKEN
 
     process = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -55,7 +57,7 @@ async def test_cli_server_requires_tls_cert_and_key_together(tmp_path, unused_tc
     cert_file, _key_file = write_self_signed_cert(tmp_path)
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path.cwd() / "src")
-    env["R1_HERMES_GATEWAY_TOKEN"] = "server-token"
+    env["R1_HERMES_GATEWAY_TOKEN"] = STRONG_GATEWAY_TOKEN
 
     process = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -79,7 +81,7 @@ async def test_cli_server_requires_tls_cert_and_key_together(tmp_path, unused_tc
     assert process.returncode != 0
     assert stdout.decode() == ""
     assert "--tls-cert-file and --tls-key-file must be provided together" in stderr.decode()
-    assert "server-token" not in stderr.decode()
+    assert STRONG_GATEWAY_TOKEN not in stderr.decode()
 
 
 def write_self_signed_cert(tmp_path: Path) -> tuple[Path, Path]:

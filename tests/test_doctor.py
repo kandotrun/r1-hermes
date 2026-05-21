@@ -4,6 +4,8 @@ import pytest
 
 from r1_hermes import cli
 
+from .token_fixtures import STRONG_GATEWAY_TOKEN
+
 WILDCARD_IPV4 = ".".join(("0", "0", "0", "0"))
 
 
@@ -70,6 +72,35 @@ def test_doctor_reports_missing_gateway_token_without_leaking_values(monkeypatch
     assert "token=" not in out
 
 
+def test_doctor_fails_on_weak_gateway_token_without_echoing_value(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    weak_token = "DUMMY_GATEWAY_TOKEN_DO_NOT_USE"
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", weak_token)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "doctor",
+            "--state-dir",
+            str(tmp_path),
+            "--skip-hermes-smoke",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "FAIL" in out
+    assert "gateway token strength" in out
+    assert "token_urlsafe(32)" in out
+    assert weak_token not in out
+
+
 def test_doctor_default_slack_equivalent_toolset_bundle_is_explicit():
     assert cli.DEFAULT_SLACK_EQUIVALENT_TOOLSETS == ("safe", "web", "terminal", "file")
 
@@ -79,7 +110,7 @@ def test_doctor_fails_when_required_slack_equivalent_toolsets_drift(
     capsys,
     tmp_path,
 ):
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -102,7 +133,7 @@ def test_doctor_fails_when_required_slack_equivalent_toolsets_drift(
     assert "Slack-equivalent toolsets" in out
     assert "missing: terminal,file" in out
     assert "extra:" not in out
-    assert "DUMMY_GATEWAY_TOKEN_DO_NOT_USE" not in out
+    assert STRONG_GATEWAY_TOKEN not in out
 
 
 def test_doctor_passes_when_required_slack_equivalent_toolsets_match_with_env_opt_in(
@@ -110,7 +141,7 @@ def test_doctor_passes_when_required_slack_equivalent_toolsets_match_with_env_op
     capsys,
     tmp_path,
 ):
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setenv("R1_HERMES_TOOLSETS", "safe,web,terminal,file")
     monkeypatch.setenv("R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS", "1")
     monkeypatch.setattr(
@@ -140,7 +171,7 @@ def test_doctor_fails_when_high_impact_toolsets_requested_without_allow_env(
     tmp_path,
 ):
     monkeypatch.delenv("R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS", raising=False)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -163,14 +194,14 @@ def test_doctor_fails_when_high_impact_toolsets_requested_without_allow_env(
     assert "terminal,file" in out
     assert "R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS is not set" in out
     assert "--allow-high-impact-toolsets" in out
-    assert "DUMMY_GATEWAY_TOKEN_DO_NOT_USE" not in out
+    assert STRONG_GATEWAY_TOKEN not in out
 
 
 def test_doctor_fails_on_unsafe_state_dir_permissions(monkeypatch, capsys, tmp_path):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     state_dir.chmod(0o755)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -202,7 +233,7 @@ def test_doctor_fails_on_unsafe_state_files(monkeypatch, capsys, tmp_path):
     key_file = state_dir / "device-token-hmac.key"
     key_file.write_text("00\n")
     key_file.chmod(0o600)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -230,7 +261,7 @@ def test_doctor_rejects_state_dir_symlink(monkeypatch, capsys, tmp_path):
     target.mkdir(mode=0o700)
     state_dir = tmp_path / "state-link"
     state_dir.symlink_to(target, target_is_directory=True)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -252,7 +283,7 @@ def test_doctor_rejects_state_dir_symlink(monkeypatch, capsys, tmp_path):
 
 
 def test_doctor_rejects_wildcard_bind_without_opt_in(monkeypatch, capsys, tmp_path):
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -277,7 +308,7 @@ def test_doctor_rejects_wildcard_bind_without_opt_in(monkeypatch, capsys, tmp_pa
 
 
 def test_doctor_warns_on_wildcard_bind_with_explicit_opt_in(monkeypatch, capsys, tmp_path):
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -307,7 +338,7 @@ def test_doctor_detects_hermes_command_unavailable_without_shell(monkeypatch, ca
         raise FileNotFoundError("missing-hermes")
 
     monkeypatch.setattr(cli, "_create_subprocess_exec", fake_process_factory)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -347,7 +378,7 @@ def test_doctor_redacts_token_probe_and_qr_values(monkeypatch, capsys, tmp_path)
 
     monkeypatch.setattr(cli, "_create_subprocess_exec", fake_process_factory)
     monkeypatch.setattr(cli, "R1ProbeClient", FakeProbeClient)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -372,14 +403,14 @@ def test_doctor_redacts_token_probe_and_qr_values(monkeypatch, capsys, tmp_path)
     assert "PASS" in out
     assert "WARN" in out
     assert "Summary: " in out
-    assert "DUMMY_GATEWAY_TOKEN_DO_NOT_USE" not in out
+    assert STRONG_GATEWAY_TOKEN not in out
     assert "DUMMY_DEVICE_TOKEN_DO_NOT_USE" not in out
     assert "Reply with exactly OK" not in out
     assert "user:secret" not in out
     assert "token=" not in out
     assert "/path" not in out
     assert str(qr_output) in out
-    assert FakeProbeClient.calls[0]["token"] == "DUMMY_GATEWAY_TOKEN_DO_NOT_USE"
+    assert FakeProbeClient.calls[0]["token"] == STRONG_GATEWAY_TOKEN
     assert FakeProbeClient.calls[1]["message"] == "Reply with exactly OK"
 
 
@@ -388,7 +419,7 @@ def test_doctor_exits_zero_when_only_warnings_are_present(monkeypatch, capsys, t
     qr_output = tmp_path / "existing.png"
     qr_output.write_bytes(b"secret qr placeholder")
     qr_output.chmod(0o600)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -416,7 +447,7 @@ def test_doctor_fails_on_unsafe_existing_qr_output(monkeypatch, capsys, tmp_path
     qr_output = tmp_path / "existing.png"
     qr_output.write_bytes(b"secret qr placeholder")
     qr_output.chmod(0o644)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -445,7 +476,7 @@ def test_doctor_rejects_qr_output_symlink(monkeypatch, capsys, tmp_path):
     target.write_bytes(b"placeholder")
     qr_output = tmp_path / "qr-link.png"
     qr_output.symlink_to(target)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -488,7 +519,7 @@ def test_doctor_fails_when_probe_fails_without_echoing_exception_detail(
 
     monkeypatch.setattr(cli, "_create_subprocess_exec", fake_process_factory)
     monkeypatch.setattr(cli, "R1ProbeClient", FailingProbeClient)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -508,5 +539,5 @@ def test_doctor_fails_when_probe_fails_without_echoing_exception_detail(
     out = capsys.readouterr().out
     assert "Gateway probe" in out
     assert "RuntimeError" in out
-    assert "DUMMY_GATEWAY_TOKEN_DO_NOT_USE" not in out
+    assert STRONG_GATEWAY_TOKEN not in out
     assert "Reply with exactly OK" not in out

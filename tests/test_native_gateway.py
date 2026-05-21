@@ -8,6 +8,8 @@ from aiohttp import ClientSession, WSMsgType
 from r1_hermes.adapter import R1HermesConfig
 from r1_hermes.native_gateway import R1GatewayMessageBridge, R1NativeGatewayAdapter
 
+from .token_fixtures import STRONG_GATEWAY_TOKEN, WRONG_STRONG_GATEWAY_TOKEN
+
 
 class FakeGatewayPipeline:
     def __init__(self, response_text="native reply"):
@@ -27,7 +29,7 @@ async def running_native_adapter(unused_tcp_port, tmp_path):
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-native-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
         ),
@@ -144,7 +146,7 @@ async def test_native_adapter_auth_rejects_before_gateway_pipeline(running_nativ
                 "id": "connect-1",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "wrong-token"},
+                    "auth": {"token": WRONG_STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-native-auth"},
                 },
             }
@@ -153,7 +155,7 @@ async def test_native_adapter_auth_rejects_before_gateway_pipeline(running_nativ
         serialized = json.dumps(msg)
         assert msg["ok"] is False
         assert msg["error"]["code"] == "UNAUTHORIZED"
-        assert "wrong-token" not in serialized
+        assert WRONG_STRONG_GATEWAY_TOKEN not in serialized
         assert pipeline.events == []
         close = await asyncio.wait_for(ws.receive(), timeout=5.0)
         assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
@@ -172,7 +174,7 @@ async def test_native_adapter_allowed_device_policy_blocks_unlisted_devices(
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-native-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
         ),
         gateway_message_handler=pipeline,
@@ -188,7 +190,7 @@ async def test_native_adapter_allowed_device_policy_blocks_unlisted_devices(
                 "id": "connect-1",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-native-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-blocked"},
                 },
             }
@@ -197,7 +199,7 @@ async def test_native_adapter_allowed_device_policy_blocks_unlisted_devices(
         serialized = json.dumps(msg)
         assert msg["ok"] is False
         assert msg["error"]["code"] == "UNAUTHORIZED"
-        assert "gateway-token-for-native-tests" not in serialized
+        assert STRONG_GATEWAY_TOKEN not in serialized
         assert "r1-blocked" not in adapter.state.devices
         assert pipeline.events == []
     finally:
@@ -219,7 +221,7 @@ async def test_native_adapter_rejects_second_connect_without_changing_active_dev
                 "id": "connect-1",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-native-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-original"},
                 },
             }
@@ -232,7 +234,7 @@ async def test_native_adapter_rejects_second_connect_without_changing_active_dev
                 "id": "connect-2",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-native-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-replacement"},
                 },
             }
@@ -294,7 +296,7 @@ async def test_native_adapter_chat_send_uses_gateway_pipeline_and_returns_reply_
                 "id": "connect-1",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-native-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-native-chat"},
                 },
             }
@@ -327,7 +329,7 @@ async def test_native_adapter_chat_send_uses_gateway_pipeline_and_returns_reply_
         assert final["payload"]["sessionKey"] == "r1-session"
         assert final["payload"]["state"] == "final"
         assert final["payload"]["message"]["content"][0]["text"] == "native reply"
-        assert "gateway-token-for-native-tests" not in serialized
+        assert STRONG_GATEWAY_TOKEN not in serialized
         assert len(pipeline.events) == 1
         event = pipeline.events[0]
         assert event.text == "hello via native pipeline"
@@ -361,7 +363,7 @@ async def test_native_send_is_noop_without_active_socket_and_emits_on_active_ses
                 "id": "connect-1",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-native-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-native-send"},
                 },
             }
@@ -400,7 +402,7 @@ async def test_native_send_is_noop_without_active_socket_and_emits_on_active_ses
         assert event["payload"]["sessionKey"] == "main-admin"
         assert event["payload"]["state"] == "final"
         assert event["payload"]["message"]["content"][0]["text"] == "proactive native reply"
-        assert "gateway-token-for-native-tests" not in serialized
+        assert STRONG_GATEWAY_TOKEN not in serialized
     finally:
         await ws.close()
         await session.close()

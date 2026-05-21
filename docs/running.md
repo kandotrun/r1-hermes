@@ -22,13 +22,20 @@ PY
 r1-hermes hermes --host 127.0.0.1 --port 18789 --ready-file /tmp/r1-hermes.ready
 ```
 
+`R1_HERMES_GATEWAY_TOKEN` must be a fresh URL-safe bearer token with at least 43 characters,
+generated from 32 random bytes as shown above. The gateway, QR payload generation, `probe`, and
+`doctor` reject missing values, known dummy placeholders, short tokens, repeated strings, and
+low-entropy-looking patterns without printing the rejected token. Rotate any deployment that still
+uses a weak local placeholder before pairing.
+
 In another terminal, verify Hermes itself is available:
 
 ```bash
 hermes chat --quiet --source r1-hermes-smoke --toolsets safe --query 'Reply with OK'
 ```
 
-You can also run the built-in diagnostics before pairing. `doctor` checks token presence, state
+You can also run the built-in diagnostics before pairing. `doctor` checks token presence and
+strength, state
 directory and secret-file permissions, bind host/port safety, effective R1 toolset parity with the
 configured Slack-equivalent bundle, Hermes CLI availability, optional gateway probing, and an
 optional QR output path without printing bearer values, QR payload JSON, device tokens, raw auth

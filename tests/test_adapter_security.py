@@ -16,6 +16,8 @@ from r1_hermes.adapter import DeviceState, R1HermesAdapter, R1HermesConfig
 from r1_hermes.chat_errors import ChatRunFailedError
 from r1_hermes.media import MediaUploadStore
 
+from .token_fixtures import STRONG_GATEWAY_TOKEN, WRONG_STRONG_GATEWAY_TOKEN
+
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "r1_payloads"
 WILDCARD_IPV4 = ".".join(("0", "0", "0", "0"))
 PNG_1X1_BASE64 = (
@@ -208,6 +210,21 @@ def serialized_audit_logs(caplog) -> str:
     return "\n".join(record.getMessage() for record in caplog.records)
 
 
+def test_adapter_rejects_weak_gateway_token_without_echoing_value(tmp_path):
+    weak_token = "gateway-secret"
+
+    with pytest.raises(ValueError) as exc_info:
+        R1HermesAdapter(
+            R1HermesConfig(gateway_token=weak_token, state_dir=tmp_path),
+            message_handler=FakeHermesSink(),
+        )
+
+    error = str(exc_info.value)
+    assert "gateway token strength" in error
+    assert "token_urlsafe(32)" in error
+    assert weak_token not in error
+
+
 @pytest_asyncio.fixture
 async def running_adapter(unused_tcp_port, tmp_path):
     sink = FakeHermesSink()
@@ -216,7 +233,7 @@ async def running_adapter(unused_tcp_port, tmp_path):
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
             per_device_concurrency=1,
@@ -240,7 +257,7 @@ async def unauth_limited_adapter(unused_tcp_port, tmp_path):
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
             unauthenticated_connection_limit=1,
@@ -272,7 +289,7 @@ def load_fixture(name: str):
 def fixture_with_gateway_token(frame: dict):
     serialized = json.dumps(frame)
     return json.loads(
-        serialized.replace("DUMMY_GATEWAY_TOKEN_DO_NOT_USE", "gateway-token-for-tests")
+        serialized.replace("DUMMY_GATEWAY_TOKEN_DO_NOT_USE", STRONG_GATEWAY_TOKEN)
     )
 
 
@@ -287,7 +304,7 @@ async def authenticated_ws_with_token(
     device_id: str,
     token: str | None = None,
 ):
-    token = "gateway-token-for-tests" if token is None else token
+    token = STRONG_GATEWAY_TOKEN if token is None else token
     session, ws = await ws_connect(base_url)
     await ws.send_json(
         {
@@ -327,7 +344,7 @@ async def test_http_healthz_includes_paired_count_only_with_diagnostic_opt_in(
         R1HermesConfig(
             host="127.0.0.1",
             port=unused_tcp_port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             health_diagnostics=True,
         ),
@@ -350,7 +367,7 @@ async def test_http_healthz_includes_paired_count_only_with_diagnostic_opt_in(
 async def test_http_healthz_rejects_non_local_requests_by_default(tmp_path):
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
         ),
         message_handler=FakeHermesSink(),
@@ -364,7 +381,7 @@ async def test_http_healthz_rejects_non_local_requests_by_default(tmp_path):
 async def test_http_healthz_allows_non_local_requests_with_explicit_opt_in(tmp_path):
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             allow_remote_health=True,
         ),
@@ -476,7 +493,7 @@ def history_frame(*, rid: str, session_key: str = "main") -> dict:
 )
 def test_config_allows_loopback_and_concrete_bind_hosts(tmp_path, host):
     config = R1HermesConfig(
-        gateway_token="gateway-token-for-tests",
+        gateway_token=STRONG_GATEWAY_TOKEN,
         state_dir=tmp_path,
         host=host,
     )
@@ -488,7 +505,7 @@ def test_config_allows_loopback_and_concrete_bind_hosts(tmp_path, host):
 def test_config_rejects_wildcard_bind_hosts_without_explicit_opt_in(tmp_path, host):
     with pytest.raises(ValueError, match="Refusing wildcard bind host"):
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             host=host,
         )
@@ -497,7 +514,7 @@ def test_config_rejects_wildcard_bind_hosts_without_explicit_opt_in(tmp_path, ho
 @pytest.mark.parametrize("host", [WILDCARD_IPV4, "::"])
 def test_config_allows_wildcard_bind_hosts_with_explicit_opt_in(tmp_path, host):
     config = R1HermesConfig(
-        gateway_token="gateway-token-for-tests",
+        gateway_token=STRONG_GATEWAY_TOKEN,
         state_dir=tmp_path,
         host=host,
         allow_public_bind=True,
@@ -559,7 +576,7 @@ async def test_successful_auth_audit_log_is_structured_and_redacted(running_adap
                 "id": "connect-logs",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-audit-success"},
                     "client": {"displayName": "Rabbit R1"},
                 },
@@ -579,7 +596,7 @@ async def test_successful_auth_audit_log_is_structured_and_redacted(running_adap
         assert success["auth_type"] == "gateway_token"
         assert success["device_id_hash"].startswith("sha256:")
         assert success["device_token_rotated"] is False
-        assert "gateway-token-for-tests" not in logs
+        assert STRONG_GATEWAY_TOKEN not in logs
         assert device_token not in logs
         assert "r1-audit-success" not in logs
     finally:
@@ -602,7 +619,7 @@ async def test_failed_auth_audit_log_distinguishes_failure_without_token_leak(
                 "id": "connect-bad",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "wrong-gateway-token-for-tests"},
+                    "auth": {"token": WRONG_STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-audit-failure"},
                 },
             }
@@ -617,8 +634,8 @@ async def test_failed_auth_audit_log_distinguishes_failure_without_token_leak(
         assert failure["reason"] == "token_mismatch"
         assert failure["method"] == "connect"
         assert failure["device_id_hash"].startswith("sha256:")
-        assert "wrong-gateway-token-for-tests" not in logs
-        assert "gateway-token-for-tests" not in logs
+        assert WRONG_STRONG_GATEWAY_TOKEN not in logs
+        assert STRONG_GATEWAY_TOKEN not in logs
         assert "r1-audit-failure" not in logs
         assert sink.messages == []
     finally:
@@ -738,7 +755,7 @@ async def test_authenticated_global_connection_cap_closes_excess_socket_before_c
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             authenticated_connection_limit=1,
             authenticated_per_device_connection_limit=2,
@@ -759,7 +776,7 @@ async def test_authenticated_global_connection_cap_closes_excess_socket_before_c
                 "id": "connect-over-global",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-global-over"},
                 },
             }
@@ -785,7 +802,7 @@ async def test_authenticated_global_connection_cap_closes_excess_socket_before_c
         assert event["global_connections"] == 1
         assert event["global_limit"] == 1
         assert "r1-global" not in logs
-        assert "gateway-token-for-tests" not in logs
+        assert STRONG_GATEWAY_TOKEN not in logs
         assert sink.messages == []
     finally:
         if first_ws is not None:
@@ -810,7 +827,7 @@ async def test_authenticated_connection_cap_rejects_without_issuing_device_token
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             authenticated_connection_limit=1,
             authenticated_per_device_connection_limit=2,
@@ -830,7 +847,7 @@ async def test_authenticated_connection_cap_rejects_without_issuing_device_token
                 "id": "connect-no-token",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-cap-rejected"},
                 },
             }
@@ -862,7 +879,7 @@ async def test_authenticated_per_device_connection_cap_closes_excess_socket(
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             authenticated_connection_limit=3,
             authenticated_per_device_connection_limit=1,
@@ -882,7 +899,7 @@ async def test_authenticated_per_device_connection_cap_closes_excess_socket(
                 "id": "connect-over-device",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-per-device"},
                 },
             }
@@ -919,7 +936,7 @@ async def test_authenticated_idle_socket_is_closed_deterministically(unused_tcp_
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             authenticated_idle_timeout_seconds=0.05,
             authenticated_max_lifetime_seconds=5,
@@ -959,7 +976,7 @@ async def test_authenticated_idle_timeout_waits_for_active_chat_run(unused_tcp_p
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             authenticated_idle_timeout_seconds=0.05,
             authenticated_max_lifetime_seconds=5,
@@ -1016,7 +1033,7 @@ async def test_repeated_malformed_unauthenticated_frames_are_rate_limited(
                 "id": "connect-after-malformed",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-after-malformed"},
                 },
             }
@@ -1025,7 +1042,7 @@ async def test_repeated_malformed_unauthenticated_frames_are_rate_limited(
         serialized = json.dumps(limited)
         assert limited["ok"] is False
         assert limited["error"]["code"] == "RATE_LIMITED"
-        assert "gateway-token-for-tests" not in serialized
+        assert STRONG_GATEWAY_TOKEN not in serialized
         close = await ws.receive()
         assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
         assert ws.close_code == 1008
@@ -1045,7 +1062,7 @@ async def test_connect_accepts_sanitized_payload_aliases(running_adapter):
                 "id": "connect-1",
                 "method": "connect",
                 "payload": {
-                    "authToken": "gateway-token-for-tests",
+                    "authToken": STRONG_GATEWAY_TOKEN,
                     "deviceId": "r1-alias",
                     "client": {"name": "OpenClaw"},
                     "ignored": "field",
@@ -1072,7 +1089,7 @@ async def test_authenticated_chat_send_runs_agent_once(running_adapter):
                 "id": "connect-1",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-test"},
                     "client": {"displayName": "Rabbit R1"},
                 },
@@ -1121,7 +1138,7 @@ async def test_chat_history_is_explicitly_unsupported_before_and_after_chat_send
     sink = FakeHermesSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             per_device_concurrency=2,
             global_concurrency=2,
@@ -1198,7 +1215,7 @@ async def test_chat_history_is_deterministic_for_known_and_unknown_session_keys(
     sink = FakeHermesSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             per_device_concurrency=2,
             global_concurrency=2,
@@ -1246,7 +1263,7 @@ async def test_chat_history_is_deterministic_for_known_and_unknown_session_keys(
 @pytest.mark.asyncio
 async def test_chat_history_accepts_sanitized_payload_aliases(tmp_path):
     adapter = R1HermesAdapter(
-        R1HermesConfig(gateway_token="gateway-token-for-tests", state_dir=tmp_path),
+        R1HermesConfig(gateway_token=STRONG_GATEWAY_TOKEN, state_dir=tmp_path),
         message_handler=FakeHermesSink(),
     )
     ws = FakeWebSocket()
@@ -1288,7 +1305,7 @@ async def test_chat_run_lifecycle_audit_logs_do_not_include_full_message_body(
                 "id": "connect-lifecycle",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-lifecycle"},
                 },
             }
@@ -1327,7 +1344,7 @@ async def test_chat_run_lifecycle_audit_logs_do_not_include_full_message_body(
         assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in logs
         assert "run-lifecycle" not in logs
         assert "r1-lifecycle" not in logs
-        assert "gateway-token-for-tests" not in logs
+        assert STRONG_GATEWAY_TOKEN not in logs
         assert device_token not in logs
     finally:
         await ws.close()
@@ -1357,7 +1374,7 @@ async def test_unsupported_media_chat_send_returns_safe_error_without_agent_run_
                 "id": "connect-media-reject",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-media-reject"},
                 },
             }
@@ -1410,7 +1427,7 @@ async def test_camera_image_chat_send_uses_media_prompt_without_media_log_leakag
         R1HermesConfig(
             host="127.0.0.1",
             port=unused_tcp_port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
         ),
@@ -1426,7 +1443,7 @@ async def test_camera_image_chat_send_uses_media_prompt_without_media_log_leakag
                 "id": "connect-camera-image",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-camera-image"},
                 },
             }
@@ -1497,7 +1514,7 @@ async def test_accepted_image_attachment_is_stored_privately_and_passed_to_herme
     sink = InspectingMediaSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
             per_device_concurrency=2,
@@ -1534,7 +1551,7 @@ async def test_sanitized_image_fixture_invocation_includes_media_path_and_prompt
     sink = InspectingMediaSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
             per_device_concurrency=2,
@@ -1562,7 +1579,7 @@ async def test_oversized_image_is_rejected_before_hermes_invocation(tmp_path):
     sink = FakeHermesSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
             per_device_concurrency=2,
@@ -1593,7 +1610,7 @@ async def test_unsupported_image_type_is_rejected_before_hermes_invocation(tmp_p
     sink = FakeHermesSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
             per_device_concurrency=2,
@@ -1629,7 +1646,7 @@ async def test_cancelled_image_chat_removes_private_upload_file(tmp_path):
     sink = BlockingMediaSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
             per_device_concurrency=1,
@@ -1664,7 +1681,7 @@ async def test_duplicate_image_idempotency_key_removes_unused_private_upload_fil
     sink = BlockingMediaSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
             per_device_concurrency=2,
@@ -1747,7 +1764,7 @@ async def test_connect_frame_variants_authenticate_and_allow_chat_send(
             assert ack_event["event"] == expected_event
             assert ack_event["payload"]["deviceId"] == expected_device_id
             assert device_token not in serialized_event
-            assert "gateway-token-for-tests" not in serialized_event
+            assert STRONG_GATEWAY_TOKEN not in serialized_event
 
         await ws.send_json(
             {
@@ -1772,7 +1789,7 @@ async def test_connect_frame_variants_authenticate_and_allow_chat_send(
         assert final["payload"]["state"] == "final"
         assert final["payload"]["message"]["content"][0]["text"] == "echo: hello from variant"
         assert device_token not in serialized_chat_frames
-        assert "gateway-token-for-tests" not in serialized_chat_frames
+        assert STRONG_GATEWAY_TOKEN not in serialized_chat_frames
         assert sink.messages[-1] == {
             "text": "hello from variant",
             "device_id": expected_device_id,
@@ -1833,7 +1850,7 @@ async def test_chat_handler_errors_emit_generic_error_event_without_token_leak(
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
         ),
@@ -1850,7 +1867,7 @@ async def test_chat_handler_errors_emit_generic_error_event_without_token_leak(
                 "id": "connect-1",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-error"},
                 },
             }
@@ -1891,7 +1908,7 @@ async def test_chat_handler_errors_emit_generic_error_event_without_token_leak(
             "state": "error",
             "error": {"code": expected_code, "message": expected_message},
         }
-        assert "gateway-token-for-tests" not in serialized
+        assert STRONG_GATEWAY_TOKEN not in serialized
         assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in serialized
         assert "DUMMY_GATEWAY_TOKEN_DO_NOT_USE" not in serialized
         assert sink.messages == [
@@ -1912,7 +1929,7 @@ async def test_hermes_failure_audit_log_is_redacted_and_distinct(caplog, unused_
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
         ),
@@ -1930,7 +1947,7 @@ async def test_hermes_failure_audit_log_is_redacted_and_distinct(caplog, unused_
                 "id": "connect-hermes-fail",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-hermes-fail"},
                 },
             }
@@ -1969,7 +1986,7 @@ async def test_hermes_failure_audit_log_is_redacted_and_distinct(caplog, unused_
         assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in logs
         assert "run-hermes-fail" not in logs
         assert "r1-hermes-fail" not in logs
-        assert "gateway-token-for-tests" not in logs
+        assert STRONG_GATEWAY_TOKEN not in logs
         assert device_token not in logs
     finally:
         if session is not None:
@@ -1989,7 +2006,7 @@ async def test_chat_send_accepts_payload_aliases_without_exposing_device_token(r
                 "id": "connect-1",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-alias-chat"},
                 },
             }
@@ -2039,7 +2056,7 @@ async def test_device_token_is_bound_to_original_device_id(running_adapter):
                 "id": "connect-1",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-original"},
                 },
             }
@@ -2076,7 +2093,7 @@ async def test_allowed_device_can_pair_and_reuse_device_token(unused_tcp_port, t
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             allowed_device_ids=("r1-allowed",),
         ),
@@ -2093,7 +2110,7 @@ async def test_allowed_device_can_pair_and_reuse_device_token(unused_tcp_port, t
                     "id": "connect-allowed-1",
                     "method": "connect",
                     "params": {
-                        "auth": {"token": "gateway-token-for-tests"},
+                        "auth": {"token": STRONG_GATEWAY_TOKEN},
                         "device": {"id": "r1-allowed"},
                     },
                 }
@@ -2140,7 +2157,7 @@ async def test_no_allowed_device_policy_preserves_gateway_token_pairing(running_
                 "id": "connect-no-allowlist",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-compatible-unlisted"},
                 },
             }
@@ -2166,7 +2183,7 @@ async def test_allowed_device_policy_blocks_unknown_pairing_before_token_issue(
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             allowed_device_ids=("r1-allowed",),
         ),
@@ -2184,7 +2201,7 @@ async def test_allowed_device_policy_blocks_unknown_pairing_before_token_issue(
                     "id": "connect-blocked",
                     "method": "connect",
                     "params": {
-                        "auth": {"token": "gateway-token-for-tests"},
+                        "auth": {"token": STRONG_GATEWAY_TOKEN},
                         "device": {"id": "r1-blocked\nDUMMY_SECRET_DEVICE_ID"},
                     },
                 }
@@ -2193,7 +2210,7 @@ async def test_allowed_device_policy_blocks_unknown_pairing_before_token_issue(
             serialized = json.dumps(msg)
             assert msg["ok"] is False
             assert msg["error"] == {"code": "UNAUTHORIZED", "message": "auth token mismatch"}
-            assert "gateway-token-for-tests" not in serialized
+            assert STRONG_GATEWAY_TOKEN not in serialized
             assert "r1-blocked" not in serialized
             assert "DUMMY_SECRET_DEVICE_ID" not in serialized
             close = await ws.receive()
@@ -2207,7 +2224,7 @@ async def test_allowed_device_policy_blocks_unknown_pairing_before_token_issue(
         assert failure["device_id_hash"].startswith("sha256:")
         assert "r1-blocked" not in logs
         assert "DUMMY_SECRET_DEVICE_ID" not in logs
-        assert "gateway-token-for-tests" not in logs
+        assert STRONG_GATEWAY_TOKEN not in logs
         assert adapter.state.device_ids() == []
         assert sink.messages == []
     finally:
@@ -2226,7 +2243,7 @@ async def test_allowed_device_policy_blocks_existing_token_for_unlisted_device(
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             allowed_device_ids=("r1-allowed",),
         ),
@@ -2274,7 +2291,7 @@ async def test_revoked_device_token_cannot_reconnect_or_run_agent(running_adapte
                 "id": "connect-1",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-revoked"},
                 },
             }
@@ -2321,7 +2338,7 @@ async def test_expired_device_token_cannot_reconnect_or_run_agent(
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             device_token_max_age_seconds=1,
             device_token_idle_timeout_seconds=0,
@@ -2339,7 +2356,7 @@ async def test_expired_device_token_cannot_reconnect_or_run_agent(
                     "id": "connect-1",
                     "method": "connect",
                     "params": {
-                        "auth": {"token": "gateway-token-for-tests"},
+                        "auth": {"token": STRONG_GATEWAY_TOKEN},
                         "device": {"id": "r1-expired"},
                     },
                 }
@@ -2402,7 +2419,7 @@ async def test_malformed_chat_payload_is_rejected_without_token_leak_or_agent_ru
                 "id": "connect-1",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-malformed"},
                 },
             }
@@ -2439,7 +2456,7 @@ async def test_unknown_method_does_not_echo_secret_or_run_agent(running_adapter)
                 "id": "connect-1",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-unknown"},
                 },
             }
@@ -2472,7 +2489,7 @@ async def test_root_http_does_not_expose_admin_or_tokens(running_adapter):
         async with session.get(base_url + "/") as response:
             assert response.status == 404
             text = await response.text()
-            assert "gateway-token-for-tests" not in text
+            assert STRONG_GATEWAY_TOKEN not in text
             assert "deviceToken" not in text
 
 
@@ -2487,7 +2504,7 @@ async def test_rate_limit_rejects_excess_messages(running_adapter):
                 "id": "connect-1",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-test"},
                 },
             }
@@ -2534,7 +2551,7 @@ async def test_rate_limit_audit_log_is_redacted(running_adapter, caplog):
                 "id": "connect-rate-log",
                 "method": "connect",
                 "params": {
-                    "auth": {"token": "gateway-token-for-tests"},
+                    "auth": {"token": STRONG_GATEWAY_TOKEN},
                     "device": {"id": "r1-rate-log"},
                 },
             }
@@ -2560,7 +2577,7 @@ async def test_rate_limit_audit_log_is_redacted(running_adapter, caplog):
         assert event["message_chars"] == len("blocked private body")
         assert "blocked private body" not in logs
         assert "r1-rate-log" not in logs
-        assert "gateway-token-for-tests" not in logs
+        assert STRONG_GATEWAY_TOKEN not in logs
         assert device_token not in logs
     finally:
         await ws.close()
@@ -2578,7 +2595,7 @@ async def test_global_concurrency_rejects_excess_runs_across_devices_without_run
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
             per_device_concurrency=1,
@@ -2611,7 +2628,7 @@ async def test_global_concurrency_rejects_excess_runs_across_devices_without_run
         assert busy["error"] == {"code": "BUSY", "message": "gateway is busy"}
         assert len(sink.messages) == 2
         assert "should not start" not in serialized
-        assert "gateway-token-for-tests" not in serialized
+        assert STRONG_GATEWAY_TOKEN not in serialized
 
         sink.release.set()
         for _session, ws in connections[:2]:
@@ -2637,7 +2654,7 @@ async def test_busy_audit_log_identifies_global_concurrency_without_prompt_leak(
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
             per_device_concurrency=1,
@@ -2674,7 +2691,7 @@ async def test_busy_audit_log_identifies_global_concurrency_without_prompt_leak(
         assert "busy private body" not in logs
         assert "active private body" not in logs
         assert "r1-busy" not in logs
-        assert "gateway-token-for-tests" not in logs
+        assert STRONG_GATEWAY_TOKEN not in logs
     finally:
         sink.release.set()
         for session, ws in connections:
@@ -2694,7 +2711,7 @@ async def test_per_device_concurrency_still_applies_when_global_capacity_remains
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
             per_device_concurrency=1,
@@ -2742,7 +2759,7 @@ async def test_duplicate_inflight_idempotency_key_does_not_start_second_run(tmp_
     sink = BlockingHermesSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             per_device_concurrency=2,
             global_concurrency=2,
@@ -2796,7 +2813,7 @@ async def test_completed_idempotency_key_replays_final_event_without_second_run(
     sink = FakeHermesSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             per_device_concurrency=2,
             global_concurrency=2,
@@ -2833,7 +2850,7 @@ async def test_completed_idempotency_key_replays_error_event_without_second_run(
     sink = RaisingHermesSink(ChatRunFailedError())
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             per_device_concurrency=2,
             global_concurrency=2,
@@ -2871,7 +2888,7 @@ async def test_lost_final_event_is_cached_for_idempotent_retry_without_second_ru
     sink = FakeHermesSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             per_device_concurrency=2,
             global_concurrency=2,
@@ -2929,7 +2946,7 @@ async def test_reconnect_after_run_started_replays_cached_final_without_second_r
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=256,
             per_device_concurrency=2,
@@ -3041,7 +3058,7 @@ async def test_repeated_media_send_replays_cached_result_without_second_agent_ru
     sink = AttachmentAwareHermesSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             per_device_concurrency=2,
             global_concurrency=2,
@@ -3093,7 +3110,7 @@ async def test_different_idempotency_keys_run_independently(tmp_path):
     sink = FakeHermesSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             per_device_concurrency=2,
             global_concurrency=2,
@@ -3119,7 +3136,7 @@ async def test_idempotency_cache_is_bounded_and_session_scoped(tmp_path):
     sink = FakeHermesSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             per_device_concurrency=2,
             global_concurrency=2,
@@ -3161,7 +3178,7 @@ async def test_idempotency_cache_expires_completed_keys(tmp_path, monkeypatch):
     sink = FakeHermesSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             per_device_concurrency=2,
             global_concurrency=2,
@@ -3187,7 +3204,7 @@ async def test_idempotency_cache_can_be_disabled_by_setting_zero_entries(tmp_pat
     sink = FakeHermesSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             per_device_concurrency=2,
             global_concurrency=2,
@@ -3219,7 +3236,7 @@ async def test_global_inflight_counter_is_released_after_timeout_error(
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
             per_device_concurrency=1,
@@ -3267,7 +3284,7 @@ async def test_chat_run_timeout_limit_cancels_handler_and_reports_gateway_limit(
     sink = CancellableBlockingHermesSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             chat_run_timeout_seconds=0.01,
             chat_heartbeat_interval_seconds=0.001,
@@ -3307,7 +3324,7 @@ async def test_chat_run_emits_periodic_heartbeats_without_prompt_or_tokens(tmp_p
     sink = BlockingHermesSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             chat_heartbeat_interval_seconds=0.01,
             rate_limit_messages=10,
@@ -3356,7 +3373,7 @@ async def test_chat_run_emits_periodic_heartbeats_without_prompt_or_tokens(tmp_p
         serialized = json.dumps(heartbeats)
         assert "private heartbeat prompt" not in serialized
         assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in serialized
-        assert "gateway-token-for-tests" not in serialized
+        assert STRONG_GATEWAY_TOKEN not in serialized
     finally:
         sink.release.set()
         await task
@@ -3378,7 +3395,7 @@ async def test_websocket_disconnect_cancels_active_chat_run_and_releases_infligh
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=128,
             per_device_concurrency=1,
@@ -3436,7 +3453,7 @@ async def test_websocket_disconnect_cancels_active_chat_run_and_releases_infligh
         assert cancel_event["run_id_hash"].startswith("sha256:")
         assert "private disconnect prompt" not in logs
         assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in logs
-        assert "gateway-token-for-tests" not in logs
+        assert STRONG_GATEWAY_TOKEN not in logs
         assert "r1-disconnect" not in logs
     finally:
         sink.release.set()
@@ -3453,7 +3470,7 @@ async def test_inflight_counters_are_released_when_handler_task_is_cancelled(tmp
     sink = BlockingHermesSink()
     adapter = R1HermesAdapter(
         R1HermesConfig(
-            gateway_token="gateway-token-for-tests",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             per_device_concurrency=1,
             global_concurrency=1,
@@ -3496,20 +3513,25 @@ async def test_inflight_counters_are_released_when_handler_task_is_cancelled(tmp
 def test_pairing_payload_is_explicitly_secret():
     from r1_hermes.qr import build_pairing_payload
 
-    payload = build_pairing_payload(hosts=["100.64.0.1"], port=18789, token="secret", protocol="ws")
+    payload = build_pairing_payload(
+        hosts=["100.64.0.1"],
+        port=18789,
+        token=STRONG_GATEWAY_TOKEN,
+        protocol="ws",
+    )
     decoded = json.loads(payload)
     assert decoded == {
         "type": "clawdbot-gateway",
         "version": 1,
         "ips": ["100.64.0.1"],
         "port": 18789,
-        "token": "secret",
+        "token": STRONG_GATEWAY_TOKEN,
         "protocol": "ws",
     }
 
 
 def test_config_from_env_reads_global_concurrency(monkeypatch, tmp_path):
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-token-for-tests")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setenv("R1_HERMES_GLOBAL_CONCURRENCY", "4")
     monkeypatch.setenv("R1_HERMES_PER_DEVICE_CONCURRENCY", "2")
     monkeypatch.setenv("R1_HERMES_IDEMPOTENCY_CACHE_MAX_ENTRIES", "12")
@@ -3531,7 +3553,7 @@ def test_config_rejects_invalid_concurrency(tmp_path):
     with pytest.raises(ValueError, match="global_concurrency"):
         R1HermesAdapter(
             R1HermesConfig(
-                gateway_token="gateway-token-for-tests",
+                gateway_token=STRONG_GATEWAY_TOKEN,
                 state_dir=tmp_path,
                 global_concurrency=0,
             ),

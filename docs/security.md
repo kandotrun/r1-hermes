@@ -212,7 +212,7 @@ reconnecting or re-pairing devices.
 
 ## Pairing flow
 
-1. Operator generates a high-entropy gateway token.
+1. Operator generates a high-entropy gateway token with `secrets.token_urlsafe(32)`.
 2. Operator builds a Rabbit R1 QR payload containing host, port, protocol, and token.
 3. If the intended R1 `device.id` is known, the operator starts the gateway with
    `--allowed-device-id <device-id>` or `R1_HERMES_ALLOWED_DEVICE_IDS`.
@@ -222,6 +222,23 @@ reconnecting or re-pairing devices.
    tokens or issuing a new device token.
 6. Adapter issues a per-device token, stores only a keyed digest, and sends the token to the device.
 7. Future connects may use the device token only with the same allowed `device.id`.
+
+The gateway token must be URL-safe, at least 43 characters, and not match known dummy,
+placeholder, repeated, or low-entropy-looking patterns. `r1-hermes hermes`, `serve`, `qr`,
+`payload`, `probe`, and `doctor` all enforce this policy and redact the rejected value from error
+output. Generate or rotate it with:
+
+```bash
+export R1_HERMES_GATEWAY_TOKEN="$(python - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+)"
+```
+
+Existing operators using weak test values must rotate the gateway token and reissue the QR before
+pairing. If the old QR may have been scanned or shared, revoke paired device tokens as part of the
+rotation.
 
 For first pairing when the device ID is not known, leave the allowlist unset only on a private
 boundary such as localhost through Tailscale Serve, a concrete Tailscale IP, or a reviewed mTLS/IP

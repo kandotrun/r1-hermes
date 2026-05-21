@@ -5,6 +5,8 @@ from aiohttp import web
 from r1_hermes.adapter import R1HermesAdapter, R1HermesConfig
 from r1_hermes.r1_client import R1ProbeClient, R1ProbeError, redact_frame_secrets
 
+from .token_fixtures import STRONG_GATEWAY_TOKEN
+
 DUMMY_GATEWAY_TOKEN = "DUMMY_GATEWAY_TOKEN_DO_NOT_USE"
 DUMMY_DEVICE_TOKEN = "DUMMY_DEVICE_TOKEN_DO_NOT_USE"
 ISSUED_DEVICE_TOKEN = "issued-device-token-for-redaction"
@@ -27,7 +29,7 @@ async def running_gateway(unused_tcp_port, tmp_path):
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="probe-token",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=512,
         ),
@@ -42,7 +44,7 @@ async def running_gateway(unused_tcp_port, tmp_path):
 
 @pytest.mark.asyncio
 async def test_probe_client_completes_connect_and_chat_flow(running_gateway):
-    client = R1ProbeClient(url=running_gateway, token="probe-token", device_id="r1-probe")
+    client = R1ProbeClient(url=running_gateway, token=STRONG_GATEWAY_TOKEN, device_id="r1-probe")
 
     result = await client.send_message("hello Hermes", session_key="main")
 
@@ -57,7 +59,7 @@ async def test_probe_client_completes_connect_and_chat_flow(running_gateway):
 
 @pytest.mark.asyncio
 async def test_probe_client_can_reuse_device_token(running_gateway):
-    first = R1ProbeClient(url=running_gateway, token="probe-token", device_id="r1-probe")
+    first = R1ProbeClient(url=running_gateway, token=STRONG_GATEWAY_TOKEN, device_id="r1-probe")
     first_result = await first.send_message("first")
 
     second = R1ProbeClient(
@@ -73,7 +75,7 @@ async def test_probe_client_can_reuse_device_token(running_gateway):
 async def test_probe_client_can_use_gateway_connect_variant(running_gateway):
     client = R1ProbeClient(
         url=running_gateway,
-        token="probe-token",
+        token=STRONG_GATEWAY_TOKEN,
         device_id="r1-gateway-probe",
         connect_method="gateway.connect",
     )
@@ -297,7 +299,7 @@ def test_redact_frame_secrets_removes_media_payloads_and_dummy_media_values():
 async def test_probe_client_rejects_unsupported_connect_method_before_network(running_gateway):
     client = R1ProbeClient(
         url=running_gateway,
-        token="probe-token",
+        token=STRONG_GATEWAY_TOKEN,
         device_id="r1-probe",
         connect_method="node.pair.approved",
     )
@@ -313,7 +315,7 @@ async def test_probe_client_fails_on_chat_error_event(unused_tcp_port, tmp_path)
         R1HermesConfig(
             host="127.0.0.1",
             port=port,
-            gateway_token="probe-token",
+            gateway_token=STRONG_GATEWAY_TOKEN,
             state_dir=tmp_path,
             max_message_chars=512,
         ),
@@ -321,14 +323,14 @@ async def test_probe_client_fails_on_chat_error_event(unused_tcp_port, tmp_path)
     )
     await adapter.start()
     try:
-        client = R1ProbeClient(url=f"ws://127.0.0.1:{port}/", token="probe-token")
+        client = R1ProbeClient(url=f"ws://127.0.0.1:{port}/", token=STRONG_GATEWAY_TOKEN)
         with pytest.raises(R1ProbeError) as excinfo:
             await client.send_message("hello")
 
         error_text = str(excinfo.value)
         assert "CHAT_RUN_FAILED: chat run failed" in error_text
         assert "DUMMY_SECRET_TOKEN_DO_NOT_USE" not in error_text
-        assert "probe-token" not in error_text
+        assert STRONG_GATEWAY_TOKEN not in error_text
     finally:
         await adapter.stop()
 
@@ -347,7 +349,7 @@ async def test_probe_client_requires_connect_challenge(unused_tcp_port):
     try:
         client = R1ProbeClient(
             url=f"ws://127.0.0.1:{unused_tcp_port}/",
-            token="probe-token",
+            token=STRONG_GATEWAY_TOKEN,
             device_id="r1-probe",
             timeout_seconds=0.2,
         )
