@@ -60,6 +60,10 @@ DEFAULT_UNAUTHENTICATED_CONNECTION_LIMIT = 8
 DEFAULT_UNAUTHENTICATED_ATTEMPT_LIMIT = 8
 DEFAULT_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS = 60
 DEFAULT_UNAUTHENTICATED_COOLDOWN_SECONDS = 60
+DEFAULT_AUTHENTICATED_CONNECTION_LIMIT = 8
+DEFAULT_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT = 2
+DEFAULT_AUTHENTICATED_IDLE_TIMEOUT_SECONDS = 300.0
+DEFAULT_AUTHENTICATED_MAX_LIFETIME_SECONDS = 3600.0
 PUBLIC_BIND_ERROR = (
     "Refusing wildcard bind host {host!r}. Binding the bearer-token gateway to all network "
     "interfaces can expose Rabbit R1 access to unintended clients. Use --host 127.0.0.1 with "
@@ -92,6 +96,12 @@ class R1HermesConfig:
     unauthenticated_attempt_limit: int = DEFAULT_UNAUTHENTICATED_ATTEMPT_LIMIT
     unauthenticated_attempt_window_seconds: int = DEFAULT_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS
     unauthenticated_cooldown_seconds: int = DEFAULT_UNAUTHENTICATED_COOLDOWN_SECONDS
+    authenticated_connection_limit: int = DEFAULT_AUTHENTICATED_CONNECTION_LIMIT
+    authenticated_per_device_connection_limit: int = (
+        DEFAULT_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT
+    )
+    authenticated_idle_timeout_seconds: float = DEFAULT_AUTHENTICATED_IDLE_TIMEOUT_SECONDS
+    authenticated_max_lifetime_seconds: float = DEFAULT_AUTHENTICATED_MAX_LIFETIME_SECONDS
     device_token_max_age_seconds: int = DEFAULT_DEVICE_TOKEN_MAX_AGE_SECONDS
     device_token_idle_timeout_seconds: int = DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS
     idempotency_cache_max_entries: int = DEFAULT_IDEMPOTENCY_CACHE_MAX_ENTRIES
@@ -128,6 +138,10 @@ class R1HermesConfig:
         allow_public_bind: bool | None = None,
         per_device_concurrency: int | None = None,
         global_concurrency: int | None = None,
+        authenticated_connection_limit: int | None = None,
+        authenticated_per_device_connection_limit: int | None = None,
+        authenticated_idle_timeout_seconds: float | None = None,
+        authenticated_max_lifetime_seconds: float | None = None,
         device_token_max_age_seconds: int | None = None,
         device_token_idle_timeout_seconds: int | None = None,
         idempotency_cache_max_entries: int | None = None,
@@ -202,6 +216,38 @@ class R1HermesConfig:
                 os.environ.get(
                     "R1_HERMES_UNAUTHENTICATED_COOLDOWN_SECONDS",
                     str(DEFAULT_UNAUTHENTICATED_COOLDOWN_SECONDS),
+                )
+            ),
+            authenticated_connection_limit=int(
+                authenticated_connection_limit
+                if authenticated_connection_limit is not None
+                else os.environ.get(
+                    "R1_HERMES_AUTHENTICATED_CONNECTION_LIMIT",
+                    str(DEFAULT_AUTHENTICATED_CONNECTION_LIMIT),
+                )
+            ),
+            authenticated_per_device_connection_limit=int(
+                authenticated_per_device_connection_limit
+                if authenticated_per_device_connection_limit is not None
+                else os.environ.get(
+                    "R1_HERMES_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT",
+                    str(DEFAULT_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT),
+                )
+            ),
+            authenticated_idle_timeout_seconds=float(
+                authenticated_idle_timeout_seconds
+                if authenticated_idle_timeout_seconds is not None
+                else os.environ.get(
+                    "R1_HERMES_AUTHENTICATED_IDLE_TIMEOUT_SECONDS",
+                    str(DEFAULT_AUTHENTICATED_IDLE_TIMEOUT_SECONDS),
+                )
+            ),
+            authenticated_max_lifetime_seconds=float(
+                authenticated_max_lifetime_seconds
+                if authenticated_max_lifetime_seconds is not None
+                else os.environ.get(
+                    "R1_HERMES_AUTHENTICATED_MAX_LIFETIME_SECONDS",
+                    str(DEFAULT_AUTHENTICATED_MAX_LIFETIME_SECONDS),
                 )
             ),
             device_token_max_age_seconds=int(
@@ -782,6 +828,20 @@ class IdempotencyCache:
         return device_id, session_key, idempotency_key
 
 
+@dataclass(frozen=True)
+class AuthenticatedConnectionRegistration:
+    ok: bool
+    reason: str = ""
+    global_connections: int = 0
+    device_connections: int = 0
+
+
+@dataclass
+class AuthenticatedConnectionState:
+    authenticated_at: float = 0.0
+    last_activity: float = 0.0
+
+
 class R1HermesAdapter:
     """Hardened OpenClaw-compatible WebSocket adapter.
 
@@ -812,6 +872,9 @@ class R1HermesAdapter:
             window_seconds=config.unauthenticated_attempt_window_seconds,
             cooldown_seconds=config.unauthenticated_cooldown_seconds,
         )
+        self._authenticated_connections = 0
+        self._authenticated_by_device: dict[str, int] = defaultdict(int)
+        self._authenticated_connection_lock = asyncio.Lock()
         self._inflight_by_device: dict[str, int] = defaultdict(int)
         self._global_inflight = 0
         self._inflight_lock = asyncio.Lock()
@@ -882,6 +945,8 @@ class R1HermesAdapter:
         authenticated = False
         device_id = ""
         session_started = time.monotonic()
+        connection_state = AuthenticatedConnectionState()
+        idle_monitor_task: asyncio.Task[None] | None = None
         active_chat_tasks: dict[asyncio.Task[None], bool] = {}
 
         await ws.send_json(
@@ -902,12 +967,26 @@ class R1HermesAdapter:
                     device_id=device_id,
                     session_started=session_started,
                     peer_key=peer_key,
+                    connection_state=connection_state,
                     active_chat_tasks=active_chat_tasks,
                 )
                 device_id = next_device_id or device_id
+                if authenticated and idle_monitor_task is None:
+                    idle_monitor_task = asyncio.create_task(
+                        self._monitor_authenticated_connection(
+                            ws,
+                            device_id=device_id,
+                            state=connection_state,
+                            active_chat_tasks=active_chat_tasks,
+                        ),
+                        name="r1-hermes-authenticated-connection-monitor",
+                    )
                 if ws.closed:
                     break
         finally:
+            if idle_monitor_task is not None:
+                idle_monitor_task.cancel()
+                await asyncio.gather(idle_monitor_task, return_exceptions=True)
             await _cancel_active_chat_tasks(active_chat_tasks)
             if not authenticated:
                 self._unauthenticated_limiter.release_connection(peer_key)
@@ -925,6 +1004,7 @@ class R1HermesAdapter:
         device_id: str,
         session_started: float,
         peer_key: str,
+        connection_state: AuthenticatedConnectionState,
         active_chat_tasks: dict[asyncio.Task[None], bool],
     ) -> tuple[str, bool]:
         if msg.type != WSMsgType.TEXT:
@@ -991,6 +1071,9 @@ class R1HermesAdapter:
                 return device_id, authenticated
             next_device_id, next_authenticated = await self._handle_connect(ws, rid, frame)
             if next_authenticated:
+                now = time.monotonic()
+                connection_state.authenticated_at = now
+                connection_state.last_activity = now
                 self._unauthenticated_limiter.release_connection(peer_key)
                 self._unauthenticated_limiter.clear(peer_key)
             return next_device_id, next_authenticated
@@ -1003,6 +1086,7 @@ class R1HermesAdapter:
             )
             await _send_error(ws, rid, "UNAUTHENTICATED", "connect required before requests")
             return device_id, authenticated
+        connection_state.last_activity = time.monotonic()
         await self._handle_authenticated_request(
             ws,
             rid,
@@ -1044,6 +1128,46 @@ class R1HermesAdapter:
             await _send_error(ws, rid, "UNAUTHORIZED", "auth token mismatch")
             await ws.close(code=POLICY_VIOLATION_CLOSE_CODE, message=b"unauthorized")
             return "", False
+        registration = await self._register_authenticated_connection(
+            device_id=auth_result.device_id
+        )
+        if not registration.ok:
+            audit_log(
+                "warning",
+                "auth.connection_rejected",
+                reason=registration.reason,
+                device_id_hash=hash_identifier(auth_result.device_id),
+                global_connections=registration.global_connections,
+                global_limit=self.config.authenticated_connection_limit,
+                device_connections=registration.device_connections,
+                per_device_limit=self.config.authenticated_per_device_connection_limit,
+            )
+            await _send_error(
+                ws,
+                rid,
+                "CONNECTION_LIMIT",
+                "too many authenticated connections",
+            )
+            await ws.close(
+                code=POLICY_VIOLATION_CLOSE_CODE,
+                message=b"authenticated connection limit",
+            )
+            return "", False
+        device_token = auth_result.device_token
+        if auth_result.auth_type == "gateway_token":
+            device_token = self.state.issue_device_token(
+                auth_result.device_id,
+                display_name=connect_request.display_name,
+            )
+        try:
+            await ws.send_json(_hello_response(rid, device_token))
+            if frame.get("method") == "gateway.connect":
+                for event in GATEWAY_CONNECT_ACK_EVENTS:
+                    await ws.send_json(_connect_ack_event(event, device_id=auth_result.device_id))
+            await self._on_ws_authenticated(ws, device_id=auth_result.device_id)
+        except Exception:
+            await self._release_authenticated_connection(device_id=auth_result.device_id)
+            raise
         audit_log(
             "info",
             "auth.success",
@@ -1052,11 +1176,6 @@ class R1HermesAdapter:
             device_id_hash=hash_identifier(auth_result.device_id),
             device_token_rotated=auth_result.device_token_rotated,
         )
-        await ws.send_json(_hello_response(rid, auth_result.device_token))
-        if frame.get("method") == "gateway.connect":
-            for event in GATEWAY_CONNECT_ACK_EVENTS:
-                await ws.send_json(_connect_ack_event(event, device_id=auth_result.device_id))
-        await self._on_ws_authenticated(ws, device_id=auth_result.device_id)
         return auth_result.device_id, True
 
     async def _handle_authenticated_request(
@@ -1134,16 +1253,125 @@ class R1HermesAdapter:
             }
         )
 
+    async def _register_authenticated_connection(
+        self, *, device_id: str
+    ) -> AuthenticatedConnectionRegistration:
+        async with self._authenticated_connection_lock:
+            global_connections = self._authenticated_connections
+            device_connections = self._authenticated_by_device.get(device_id, 0)
+            if (
+                self.config.authenticated_connection_limit > 0
+                and global_connections >= self.config.authenticated_connection_limit
+            ):
+                return AuthenticatedConnectionRegistration(
+                    False,
+                    reason="global_connection_limit",
+                    global_connections=global_connections,
+                    device_connections=device_connections,
+                )
+            if (
+                self.config.authenticated_per_device_connection_limit > 0
+                and device_connections >= self.config.authenticated_per_device_connection_limit
+            ):
+                return AuthenticatedConnectionRegistration(
+                    False,
+                    reason="per_device_connection_limit",
+                    global_connections=global_connections,
+                    device_connections=device_connections,
+                )
+
+            self._authenticated_connections += 1
+            self._authenticated_by_device[device_id] += 1
+            return AuthenticatedConnectionRegistration(
+                True,
+                global_connections=self._authenticated_connections,
+                device_connections=self._authenticated_by_device[device_id],
+            )
+
+    async def _release_authenticated_connection(self, *, device_id: str) -> None:
+        async with self._authenticated_connection_lock:
+            if self._authenticated_connections > 0:
+                self._authenticated_connections -= 1
+            device_connections = self._authenticated_by_device.get(device_id, 0)
+            if device_connections <= 1:
+                self._authenticated_by_device.pop(device_id, None)
+            else:
+                self._authenticated_by_device[device_id] = device_connections - 1
+
     async def _on_ws_authenticated(self, ws: web.WebSocketResponse, *, device_id: str) -> None:
         del ws, device_id
 
     async def _on_ws_closed(self, ws: web.WebSocketResponse, *, device_id: str) -> None:
-        del ws, device_id
+        del ws
+        await self._release_authenticated_connection(device_id=device_id)
 
     async def _on_chat_session_active(
         self, ws: web.WebSocketResponse, *, device_id: str, session_key: str
     ) -> None:
         del ws, device_id, session_key
+
+    async def _monitor_authenticated_connection(
+        self,
+        ws: web.WebSocketResponse,
+        *,
+        device_id: str,
+        state: AuthenticatedConnectionState,
+        active_chat_tasks: dict[asyncio.Task[None], bool],
+    ) -> None:
+        interval_seconds = _authenticated_monitor_interval(self.config)
+        while not _ws_closed(ws):
+            await asyncio.sleep(interval_seconds)
+            if _has_active_chat_tasks(active_chat_tasks):
+                continue
+
+            now = time.monotonic()
+            lifetime_seconds = now - state.authenticated_at
+            if lifetime_seconds >= self.config.authenticated_max_lifetime_seconds:
+                await self._close_authenticated_connection_over_policy(
+                    ws,
+                    device_id=device_id,
+                    reason="max_lifetime",
+                    code="AUTHENTICATED_CONNECTION_EXPIRED",
+                    message="authenticated connection lifetime exceeded",
+                    lifetime_seconds=lifetime_seconds,
+                    idle_seconds=max(0.0, now - state.last_activity),
+                )
+                return
+
+            idle_seconds = now - state.last_activity
+            if idle_seconds >= self.config.authenticated_idle_timeout_seconds:
+                await self._close_authenticated_connection_over_policy(
+                    ws,
+                    device_id=device_id,
+                    reason="idle_timeout",
+                    code="AUTHENTICATED_IDLE_TIMEOUT",
+                    message="authenticated connection idle timeout",
+                    lifetime_seconds=lifetime_seconds,
+                    idle_seconds=idle_seconds,
+                )
+                return
+
+    async def _close_authenticated_connection_over_policy(
+        self,
+        ws: web.WebSocketResponse,
+        *,
+        device_id: str,
+        reason: str,
+        code: str,
+        message: str,
+        lifetime_seconds: float,
+        idle_seconds: float,
+    ) -> None:
+        audit_log(
+            "info",
+            "auth.connection_closed",
+            reason=reason,
+            device_id_hash=hash_identifier(device_id),
+            idle_seconds=int(idle_seconds),
+            lifetime_seconds=int(lifetime_seconds),
+        )
+        await _send_error(ws, None, code, message)
+        await ws.close(code=POLICY_VIOLATION_CLOSE_CODE, message=reason.encode("ascii"))
 
     def _authenticate_connect(
         self, supplied: str, *, device_id: str, display_name: str
@@ -1158,7 +1386,6 @@ class R1HermesAdapter:
             return AuthResult(
                 ok=True,
                 device_id=device_id,
-                device_token=self.state.issue_device_token(device_id, display_name=display_name),
                 auth_type="gateway_token",
             )
 
@@ -1752,6 +1979,22 @@ def _validate_config(config: R1HermesConfig) -> None:
         raise ValueError("rate_limit_window_seconds must be at least 1")
     if config.unauthenticated_timeout_seconds < 1:
         raise ValueError("unauthenticated_timeout_seconds must be at least 1")
+    if config.unauthenticated_connection_limit < 1:
+        raise ValueError("unauthenticated_connection_limit must be at least 1")
+    if config.unauthenticated_attempt_limit < 1:
+        raise ValueError("unauthenticated_attempt_limit must be at least 1")
+    if config.unauthenticated_attempt_window_seconds < 1:
+        raise ValueError("unauthenticated_attempt_window_seconds must be at least 1")
+    if config.unauthenticated_cooldown_seconds < 1:
+        raise ValueError("unauthenticated_cooldown_seconds must be at least 1")
+    if config.authenticated_connection_limit < 1:
+        raise ValueError("authenticated_connection_limit must be at least 1")
+    if config.authenticated_per_device_connection_limit < 1:
+        raise ValueError("authenticated_per_device_connection_limit must be at least 1")
+    if config.authenticated_idle_timeout_seconds <= 0:
+        raise ValueError("authenticated_idle_timeout_seconds must be greater than 0")
+    if config.authenticated_max_lifetime_seconds <= 0:
+        raise ValueError("authenticated_max_lifetime_seconds must be greater than 0")
     if config.chat_run_timeout_seconds <= 0:
         raise ValueError("chat_run_timeout_seconds must be greater than 0")
     if config.chat_heartbeat_interval_seconds <= 0:
@@ -1959,6 +2202,10 @@ def _discard_finished_task(
         audit_log("warning", "chat.task_failed", error_type=exc.__class__.__name__)
 
 
+def _has_active_chat_tasks(tasks: dict[asyncio.Task[None], bool]) -> bool:
+    return any(not task.done() for task in tasks)
+
+
 async def _cancel_active_chat_tasks(tasks: dict[asyncio.Task[None], bool]) -> None:
     if not tasks:
         return
@@ -1985,6 +2232,14 @@ def _chat_task_cancel_on_disconnect(
     except PayloadParseError:
         return True
     return chat_request.idempotency_key is None
+
+
+def _authenticated_monitor_interval(config: R1HermesConfig) -> float:
+    shortest_policy = min(
+        config.authenticated_idle_timeout_seconds,
+        config.authenticated_max_lifetime_seconds,
+    )
+    return min(5.0, max(0.01, shortest_policy / 2))
 
 
 def _ws_closed(ws: web.WebSocketResponse) -> bool:

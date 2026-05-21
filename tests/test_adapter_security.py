@@ -727,6 +727,273 @@ async def test_concurrent_unauthenticated_connections_are_limited_by_peer(
 
 
 @pytest.mark.asyncio
+async def test_authenticated_global_connection_cap_closes_excess_socket_before_chat(
+    unused_tcp_port,
+    tmp_path,
+    caplog,
+):
+    sink = FakeHermesSink()
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            authenticated_connection_limit=1,
+            authenticated_per_device_connection_limit=2,
+        ),
+        message_handler=sink,
+    )
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    await adapter.start()
+    first_session = first_ws = second_session = second_ws = None
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        first_session, first_ws = await authenticated_ws(base_url, device_id="r1-global-open")
+
+        second_session, second_ws = await ws_connect(base_url)
+        await second_ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-over-global",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-tests"},
+                    "device": {"id": "r1-global-over"},
+                },
+            }
+        )
+
+        rejected = await second_ws.receive_json()
+        close = await second_ws.receive()
+        logs = serialized_audit_logs(caplog)
+        event = next(
+            event
+            for event in audit_events(caplog)
+            if event["event"] == "auth.connection_rejected"
+        )
+
+        assert rejected["ok"] is False
+        assert rejected["error"] == {
+            "code": "CONNECTION_LIMIT",
+            "message": "too many authenticated connections",
+        }
+        assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
+        assert second_ws.close_code == 1008
+        assert event["reason"] == "global_connection_limit"
+        assert event["global_connections"] == 1
+        assert event["global_limit"] == 1
+        assert "r1-global" not in logs
+        assert "gateway-token-for-tests" not in logs
+        assert sink.messages == []
+    finally:
+        if first_ws is not None:
+            await first_ws.close()
+        if second_ws is not None:
+            await second_ws.close()
+        if first_session is not None:
+            await first_session.close()
+        if second_session is not None:
+            await second_session.close()
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_connection_cap_rejects_without_issuing_device_token(
+    unused_tcp_port,
+    tmp_path,
+):
+    sink = FakeHermesSink()
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            authenticated_connection_limit=1,
+            authenticated_per_device_connection_limit=2,
+        ),
+        message_handler=sink,
+    )
+    await adapter.start()
+    first_session = first_ws = second_session = second_ws = None
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        first_session, first_ws = await authenticated_ws(base_url, device_id="r1-cap-existing")
+
+        second_session, second_ws = await ws_connect(base_url)
+        await second_ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-no-token",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-tests"},
+                    "device": {"id": "r1-cap-rejected"},
+                },
+            }
+        )
+        rejected = await second_ws.receive_json()
+
+        assert rejected["error"]["code"] == "CONNECTION_LIMIT"
+        assert "r1-cap-rejected" not in adapter.state.device_ids()
+    finally:
+        if first_ws is not None:
+            await first_ws.close()
+        if second_ws is not None:
+            await second_ws.close()
+        if first_session is not None:
+            await first_session.close()
+        if second_session is not None:
+            await second_session.close()
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_per_device_connection_cap_closes_excess_socket(
+    unused_tcp_port,
+    tmp_path,
+):
+    sink = FakeHermesSink()
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            authenticated_connection_limit=3,
+            authenticated_per_device_connection_limit=1,
+        ),
+        message_handler=sink,
+    )
+    await adapter.start()
+    first_session = first_ws = second_session = second_ws = third_session = third_ws = None
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        first_session, first_ws = await authenticated_ws(base_url, device_id="r1-per-device")
+
+        second_session, second_ws = await ws_connect(base_url)
+        await second_ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-over-device",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-tests"},
+                    "device": {"id": "r1-per-device"},
+                },
+            }
+        )
+        rejected = await second_ws.receive_json()
+        close = await second_ws.receive()
+        device_ids_after_reject = adapter.state.device_ids()
+
+        third_session, third_ws = await authenticated_ws(base_url, device_id="r1-other-device")
+
+        assert rejected["ok"] is False
+        assert rejected["error"]["code"] == "CONNECTION_LIMIT"
+        assert device_ids_after_reject == ["r1-per-device"]
+        assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
+        assert second_ws.close_code == 1008
+        assert not first_ws.closed
+        assert not third_ws.closed
+        assert sink.messages == []
+    finally:
+        for ws in (first_ws, second_ws, third_ws):
+            if ws is not None:
+                await ws.close()
+        for session in (first_session, second_session, third_session):
+            if session is not None:
+                await session.close()
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_idle_socket_is_closed_deterministically(unused_tcp_port, tmp_path):
+    sink = FakeHermesSink()
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            authenticated_idle_timeout_seconds=0.05,
+            authenticated_max_lifetime_seconds=5,
+        ),
+        message_handler=sink,
+    )
+    await adapter.start()
+    session = ws = None
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        session, ws = await authenticated_ws(base_url, device_id="r1-idle")
+
+        idle_error = await asyncio.wait_for(ws.receive_json(), timeout=1)
+        close = await asyncio.wait_for(ws.receive(), timeout=1)
+
+        assert idle_error["ok"] is False
+        assert idle_error["error"] == {
+            "code": "AUTHENTICATED_IDLE_TIMEOUT",
+            "message": "authenticated connection idle timeout",
+        }
+        assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
+        assert ws.close_code == 1008
+        assert sink.messages == []
+    finally:
+        if ws is not None:
+            await ws.close()
+        if session is not None:
+            await session.close()
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_idle_timeout_waits_for_active_chat_run(unused_tcp_port, tmp_path):
+    sink = BlockingHermesSink()
+    port = unused_tcp_port
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            authenticated_idle_timeout_seconds=0.05,
+            authenticated_max_lifetime_seconds=5,
+            rate_limit_messages=10,
+        ),
+        message_handler=sink,
+    )
+    await adapter.start()
+    session = ws = None
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        session, ws = await authenticated_ws(base_url, device_id="r1-idle-active")
+
+        await send_chat(ws, rid="chat-active-idle", message="still running")
+        assert (await ws.receive_json())["ok"] is True
+        assert (await ws.receive_json())["payload"]["state"] == "started"
+        await sink.wait_for_calls(1)
+        await asyncio.sleep(0.15)
+
+        sink.release.set()
+        final = await asyncio.wait_for(ws.receive_json(), timeout=1)
+
+        assert final["payload"]["state"] == "final"
+        assert final["payload"]["message"]["content"][0]["text"] == "released: still running"
+    finally:
+        sink.release.set()
+        if ws is not None:
+            await ws.close()
+        if session is not None:
+            await session.close()
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
 async def test_repeated_malformed_unauthenticated_frames_are_rate_limited(
     unauth_limited_adapter,
 ):

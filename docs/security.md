@@ -22,7 +22,7 @@ For supported Python versions and disclosure routing, see [`../README.md`](../RE
 4. No unauthenticated admin UI.
 5. Device tokens are stored as keyed HMAC-SHA-256 digests under a `0700` state directory, bound to the original `device.id`, and expire by configured age and idle windows.
 6. Unauthenticated handshake limits are enforced by peer IP before authentication.
-7. Authenticated rate limit, length limit, global concurrency limit, and per-device concurrency limit are enforced before Hermes execution.
+7. Authenticated socket caps, idle/lifetime policy, rate limit, length limit, global concurrency limit, and per-device concurrency limit are enforced before Hermes execution.
 8. QR payloads contain secrets and must be shared/retained accordingly.
 9. HTTP health checks expose only minimal readiness by default and stay local-only unless remote
    health access is explicitly reviewed.
@@ -89,6 +89,24 @@ global cap only after sizing CPU, memory, model/API limits, and expected Hermes 
 avoid raising the per-device cap unless the operator explicitly accepts that one physical device can
 consume multiple Hermes subprocess slots. When a cap is reached, the gateway returns a generic
 `BUSY` response and does not start Hermes.
+
+Authenticated WebSocket sockets are bounded separately from Hermes subprocess concurrency so idle
+paired clients cannot consume descriptors indefinitely. Defaults are eight total authenticated
+sockets, two authenticated sockets per `device.id`, 300 seconds of authenticated idle time, and
+3600 seconds maximum authenticated socket lifetime:
+
+```text
+R1_HERMES_AUTHENTICATED_CONNECTION_LIMIT=8
+R1_HERMES_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT=2
+R1_HERMES_AUTHENTICATED_IDLE_TIMEOUT_SECONDS=300
+R1_HERMES_AUTHENTICATED_MAX_LIFETIME_SECONDS=3600
+```
+
+Connections over the cap receive only `CONNECTION_LIMIT`; idle and over-lifetime sockets receive
+`AUTHENTICATED_IDLE_TIMEOUT` or `AUTHENTICATED_CONNECTION_EXPIRED`, then close with WebSocket
+policy-violation code `1008`. Audit logs include only reason, counts, limits, durations, and hashed
+device IDs. The idle/lifetime monitor does not close a socket while a chat task is active; it
+applies policy after the active run finishes or when the socket is otherwise idle.
 
 Authenticated R1 chat runs also have a deterministic gateway timeout. The default is 180 seconds;
 configure it with `--timeout`, `R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS`, or the legacy
@@ -329,6 +347,23 @@ do not make direct public-Internet exposure acceptable.
 This project does not implement unauthenticated pairing, browser admin pairing, arbitrary method
 forwarding, binary capture replay, or non-chat Rabbit services. Unsupported methods continue to
 receive a generic `UNKNOWN_METHOD` response after authentication.
+
+## Authenticated socket settings
+
+The authenticated connection defaults are in-memory and reset when the process restarts:
+
+```text
+R1_HERMES_AUTHENTICATED_CONNECTION_LIMIT=8
+R1_HERMES_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT=2
+R1_HERMES_AUTHENTICATED_IDLE_TIMEOUT_SECONDS=300
+R1_HERMES_AUTHENTICATED_MAX_LIFETIME_SECONDS=3600
+```
+
+For a single Rabbit R1, the defaults leave room for a short reconnect overlap while still bounding a
+leaked token. If the client is known to maintain only one socket, lowering the per-device cap to
+`1` is reasonable. For a reviewed multi-device deployment, raise the global cap only to the
+expected number of simultaneously connected physical devices plus a small reconnect margin, and
+keep the per-device cap low.
 
 ## Media upload lifecycle
 

@@ -16,6 +16,10 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from .adapter import (
+    DEFAULT_AUTHENTICATED_CONNECTION_LIMIT,
+    DEFAULT_AUTHENTICATED_IDLE_TIMEOUT_SECONDS,
+    DEFAULT_AUTHENTICATED_MAX_LIFETIME_SECONDS,
+    DEFAULT_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT,
     DEFAULT_CHAT_HEARTBEAT_INTERVAL_SECONDS,
     DEFAULT_CHAT_RUN_TIMEOUT_SECONDS,
     DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS,
@@ -95,6 +99,50 @@ def add_server_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=int(os.environ.get("R1_HERMES_PER_DEVICE_CONCURRENCY", "1")),
         help="Maximum authenticated chat runs allowed at once for one device",
+    )
+    parser.add_argument(
+        "--authenticated-connection-limit",
+        type=int,
+        default=int(
+            os.environ.get(
+                "R1_HERMES_AUTHENTICATED_CONNECTION_LIMIT",
+                str(DEFAULT_AUTHENTICATED_CONNECTION_LIMIT),
+            )
+        ),
+        help="Maximum total authenticated WebSocket connections allowed at once",
+    )
+    parser.add_argument(
+        "--authenticated-per-device-connection-limit",
+        type=int,
+        default=int(
+            os.environ.get(
+                "R1_HERMES_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT",
+                str(DEFAULT_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT),
+            )
+        ),
+        help="Maximum authenticated WebSocket connections allowed at once for one device",
+    )
+    parser.add_argument(
+        "--authenticated-idle-timeout-seconds",
+        type=float,
+        default=float(
+            os.environ.get(
+                "R1_HERMES_AUTHENTICATED_IDLE_TIMEOUT_SECONDS",
+                str(DEFAULT_AUTHENTICATED_IDLE_TIMEOUT_SECONDS),
+            )
+        ),
+        help="Seconds an authenticated idle WebSocket may remain open without chat work",
+    )
+    parser.add_argument(
+        "--authenticated-max-lifetime-seconds",
+        type=float,
+        default=float(
+            os.environ.get(
+                "R1_HERMES_AUTHENTICATED_MAX_LIFETIME_SECONDS",
+                str(DEFAULT_AUTHENTICATED_MAX_LIFETIME_SECONDS),
+            )
+        ),
+        help="Maximum authenticated WebSocket lifetime in seconds",
     )
     parser.add_argument(
         "--allow-public-bind",
@@ -438,6 +486,12 @@ def main() -> None:
                 allow_public_bind=args.allow_public_bind,
                 per_device_concurrency=args.per_device_concurrency,
                 global_concurrency=args.global_concurrency,
+                authenticated_connection_limit=args.authenticated_connection_limit,
+                authenticated_per_device_connection_limit=(
+                    args.authenticated_per_device_connection_limit
+                ),
+                authenticated_idle_timeout_seconds=args.authenticated_idle_timeout_seconds,
+                authenticated_max_lifetime_seconds=args.authenticated_max_lifetime_seconds,
                 device_token_max_age_seconds=args.device_token_max_age_seconds,
                 device_token_idle_timeout_seconds=args.device_token_idle_timeout_seconds,
                 idempotency_cache_max_entries=args.idempotency_cache_max_entries,
