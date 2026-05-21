@@ -43,6 +43,7 @@ from .payloads import (
     parse_connect_params,
     request_params,
 )
+from .token_policy import require_strong_gateway_token
 
 DEFAULT_PORT = 18789
 DEFAULT_HOST = "127.0.0.1"
@@ -118,6 +119,7 @@ class R1HermesConfig:
     frame_shape_logging: bool = False
 
     def __post_init__(self) -> None:
+        require_strong_gateway_token(self.gateway_token, context="gateway token")
         object.__setattr__(
             self,
             "allowed_device_ids",

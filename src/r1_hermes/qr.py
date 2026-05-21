@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import Iterable
 
+from .token_policy import require_strong_gateway_token
+
 PAYLOAD_TYPE = "clawdbot-gateway"
 OWNER_READ_WRITE = 0o600
 OWNER_READ_WRITE_EXECUTE = 0o700
@@ -18,8 +20,7 @@ def build_pairing_payload(
     host_list = [h.strip() for h in hosts if h and h.strip()]
     if not host_list:
         raise ValueError("at least one host/IP is required")
-    if not token:
-        raise ValueError("token is required")
+    require_strong_gateway_token(token, context="gateway token")
     payload = {
         "type": PAYLOAD_TYPE,
         "version": 1,

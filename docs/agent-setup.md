@@ -88,6 +88,10 @@ PY
 )"
 ```
 
+The gateway rejects weak pairing tokens. The value must be URL-safe, at least 43 characters, and
+generated from 32 random bytes; do not use copied placeholders, repeated strings, or short local
+test values.
+
 Do not echo this environment variable. If you accidentally expose it, rotate it by generating a new one and restart the gateway.
 
 Before starting the gateway, run the secret-safe diagnostics. This command prints pass/warn/fail

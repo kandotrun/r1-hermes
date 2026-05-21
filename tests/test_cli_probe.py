@@ -3,6 +3,8 @@ import pytest
 from r1_hermes import adapter as adapter_module
 from r1_hermes import cli
 
+from .token_fixtures import STRONG_GATEWAY_TOKEN
+
 WILDCARD_IPV4 = ".".join(("0", "0", "0", "0"))
 
 
@@ -44,7 +46,7 @@ class FakeProbeClient:
 def test_probe_command_sends_message_without_printing_device_token(monkeypatch, capsys):
     FakeProbeClient.calls = []
     monkeypatch.setattr(cli, "R1ProbeClient", FakeProbeClient)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -69,7 +71,7 @@ def test_probe_command_sends_message_without_printing_device_token(monkeypatch, 
     assert FakeProbeClient.calls == [
         {
             "url": "ws://127.0.0.1:18789/",
-            "token": "gateway-secret",
+            "token": STRONG_GATEWAY_TOKEN,
             "device_id": "r1-test",
             "timeout_seconds": 30.0,
             "connect_method": "connect",
@@ -83,7 +85,7 @@ def test_probe_command_sends_message_without_printing_device_token(monkeypatch, 
 def test_probe_command_accepts_gateway_connect_variant(monkeypatch, capsys):
     FakeProbeClient.calls = []
     monkeypatch.setattr(cli, "R1ProbeClient", FakeProbeClient)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -108,7 +110,7 @@ def test_probe_command_accepts_gateway_connect_variant(monkeypatch, capsys):
 def test_probe_command_enables_safe_frame_dump(monkeypatch, capsys):
     FakeProbeClient.calls = []
     monkeypatch.setattr(cli, "R1ProbeClient", FakeProbeClient)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -141,6 +143,23 @@ def test_probe_command_requires_token(monkeypatch):
         cli.main()
 
 
+def test_probe_command_rejects_weak_token_without_echoing_value(monkeypatch):
+    weak_token = "gateway-secret"
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", weak_token)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["r1-hermes", "probe", "--url", "ws://127.0.0.1:18789/", "--message", "hello"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    error = str(exc_info.value)
+    assert "gateway token strength" in error
+    assert "token_urlsafe(32)" in error
+    assert weak_token not in error
+
+
 def test_server_command_reads_unauthenticated_limit_env(monkeypatch, tmp_path):
     created = []
 
@@ -153,7 +172,7 @@ def test_server_command_reads_unauthenticated_limit_env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
     monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setenv("R1_HERMES_UNAUTHENTICATED_CONNECTION_LIMIT", "3")
     monkeypatch.setenv("R1_HERMES_UNAUTHENTICATED_ATTEMPT_LIMIT", "4")
     monkeypatch.setenv("R1_HERMES_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS", "5")
@@ -181,7 +200,7 @@ def test_server_command_reads_unauthenticated_limit_env(monkeypatch, tmp_path):
     cli.main()
 
     config = created[0]["config"]
-    assert config.gateway_token == "gateway-secret"
+    assert config.gateway_token == STRONG_GATEWAY_TOKEN
     assert config.host == "127.0.0.1"
     assert config.port == 18789
     assert config.unauthenticated_connection_limit == 3
@@ -208,7 +227,7 @@ def test_server_command_reads_allowed_device_ids_from_env(monkeypatch, tmp_path)
 
     monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
     monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setenv("R1_HERMES_ALLOWED_DEVICE_IDS", "r1-env-a, r1-env-b\nr1-env-c")
     monkeypatch.setattr(
         "sys.argv",
@@ -233,7 +252,7 @@ def test_server_command_allows_repeatable_allowed_device_id_cli(monkeypatch, tmp
 
     monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
     monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setenv("R1_HERMES_ALLOWED_DEVICE_IDS", "r1-env-ignored")
     monkeypatch.setattr(
         "sys.argv",
@@ -267,7 +286,7 @@ def test_server_command_reads_health_privacy_env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
     monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setenv("R1_HERMES_ALLOW_REMOTE_HEALTH", "1")
     monkeypatch.setenv("R1_HERMES_HEALTH_DIAGNOSTICS", "1")
     monkeypatch.setattr(
@@ -283,7 +302,7 @@ def test_server_command_reads_health_privacy_env(monkeypatch, tmp_path):
 
 
 def test_server_command_rejects_wildcard_bind_without_explicit_opt_in(monkeypatch, tmp_path):
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -307,6 +326,26 @@ def test_server_command_rejects_wildcard_bind_without_explicit_opt_in(monkeypatc
     assert "127.0.0.1" in error
 
 
+def test_server_command_rejects_weak_gateway_token_without_echoing_value(
+    monkeypatch,
+    tmp_path,
+):
+    weak_token = "passwordpasswordpasswordpassword"
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", weak_token)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["r1-hermes", "serve", "--state-dir", str(tmp_path)],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    error = str(exc_info.value)
+    assert "gateway token strength" in error
+    assert "token_urlsafe(32)" in error
+    assert weak_token not in error
+
+
 def test_server_command_allows_wildcard_bind_with_explicit_flag(monkeypatch, tmp_path):
     captured = []
 
@@ -314,7 +353,7 @@ def test_server_command_allows_wildcard_bind_with_explicit_flag(monkeypatch, tmp
         captured.append({"config": adapter.config, "ready_file": ready_file})
 
     monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -341,7 +380,7 @@ def test_server_command_allows_wildcard_bind_with_env_opt_in(monkeypatch, tmp_pa
         captured.append(adapter.config)
 
     monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setenv("R1_HERMES_ALLOW_PUBLIC_BIND", "1")
     monkeypatch.setattr(
         "sys.argv",
@@ -361,8 +400,25 @@ def test_server_command_allows_wildcard_bind_with_env_opt_in(monkeypatch, tmp_pa
     assert captured[0].allow_public_bind is True
 
 
+def test_payload_command_rejects_weak_token_without_echoing_value(monkeypatch):
+    weak_token = "DUMMY_GATEWAY_TOKEN_DO_NOT_USE"
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", weak_token)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["r1-hermes", "payload", "--host", "100.64.0.1"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    error = str(exc_info.value)
+    assert "gateway token strength" in error
+    assert "token_urlsafe(32)" in error
+    assert weak_token not in error
+
+
 def test_qr_command_does_not_print_payload_without_explicit_flag(monkeypatch, capsys, tmp_path):
-    dummy_gateway_token = "gateway-secret"
+    dummy_gateway_token = STRONG_GATEWAY_TOKEN
     written = []
 
     def fake_write_qr_png(payload, output_path, *, overwrite=False):
@@ -402,7 +458,7 @@ def test_qr_command_does_not_print_payload_without_explicit_flag(monkeypatch, ca
 
 
 def test_qr_command_prints_payload_only_with_explicit_flag(monkeypatch, capsys, tmp_path):
-    dummy_gateway_token = "gateway-secret"
+    dummy_gateway_token = STRONG_GATEWAY_TOKEN
 
     def fake_write_qr_png(payload, output_path, *, overwrite=False):
         return output_path
@@ -426,6 +482,30 @@ def test_qr_command_prints_payload_only_with_explicit_flag(monkeypatch, capsys, 
 
     out = capsys.readouterr().out
     assert f'"token":"{dummy_gateway_token}"' in out
+
+
+def test_qr_command_rejects_weak_token_without_echoing_value(monkeypatch, tmp_path):
+    weak_token = "12345678901234567890123456789012"
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", weak_token)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "qr",
+            "--host",
+            "100.64.0.1",
+            "--output",
+            str(tmp_path / "pairing.png"),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    error = str(exc_info.value)
+    assert "gateway token strength" in error
+    assert "token_urlsafe(32)" in error
+    assert weak_token not in error
 
 
 def test_revoke_command_removes_device_from_state(monkeypatch, capsys, tmp_path):
@@ -657,7 +737,7 @@ def test_serve_command_passes_concurrency_options(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
     monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -710,7 +790,7 @@ def test_hermes_command_reads_concurrency_from_env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
     monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setenv("R1_HERMES_GLOBAL_CONCURRENCY", "6")
     monkeypatch.setenv("R1_HERMES_PER_DEVICE_CONCURRENCY", "3")
     monkeypatch.setenv("R1_HERMES_IDEMPOTENCY_CACHE_MAX_ENTRIES", "44")
@@ -761,7 +841,7 @@ def test_hermes_command_timeout_flag_configures_gateway_and_runner(monkeypatch, 
 
     monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
     monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -798,7 +878,7 @@ def test_hermes_command_allows_safe_and_web_toolsets(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
     monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -833,7 +913,7 @@ def test_hermes_command_rejects_high_impact_toolsets_without_override(
 
     monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
     monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -854,7 +934,7 @@ def test_hermes_command_rejects_high_impact_toolsets_without_override(
     assert "terminal" in error
     assert "file" in error
     assert "--allow-high-impact-toolsets" in error
-    assert "gateway-secret" not in error
+    assert STRONG_GATEWAY_TOKEN not in error
     assert created == []
 
 
@@ -862,7 +942,7 @@ def test_hermes_command_rejects_high_impact_toolsets_from_env_without_override(
     monkeypatch,
     tmp_path,
 ):
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setenv("R1_HERMES_TOOLSETS", "terminal,file")
     monkeypatch.setattr(
         "sys.argv",
@@ -881,7 +961,7 @@ def test_hermes_command_rejects_high_impact_toolsets_from_env_without_override(
     assert "high-impact Hermes toolsets" in error
     assert "terminal" in error
     assert "file" in error
-    assert "gateway-secret" not in error
+    assert STRONG_GATEWAY_TOKEN not in error
 
 
 def test_hermes_command_allows_high_impact_toolsets_with_explicit_flag(
@@ -901,7 +981,7 @@ def test_hermes_command_allows_high_impact_toolsets_with_explicit_flag(
 
     monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
     monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -939,7 +1019,7 @@ def test_hermes_command_allows_high_impact_toolsets_with_env_override(
 
     monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
     monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setenv("R1_HERMES_TOOLSETS", "terminal,file")
     monkeypatch.setenv("R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS", "1")
     monkeypatch.setattr(
@@ -960,7 +1040,7 @@ def test_hermes_command_allows_high_impact_toolsets_with_env_override(
 
 
 def test_server_command_reports_invalid_concurrency_without_traceback(monkeypatch, tmp_path):
-    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", STRONG_GATEWAY_TOKEN)
     monkeypatch.setattr(
         "sys.argv",
         [

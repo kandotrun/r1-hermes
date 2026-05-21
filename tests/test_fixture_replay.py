@@ -8,11 +8,12 @@ from r1_hermes.adapter import R1HermesAdapter, R1HermesConfig
 from r1_hermes.qr import build_pairing_payload
 
 from .replay_helpers import FixtureReplayFlow, replay_fixture_flow
+from .token_fixtures import STRONG_GATEWAY_TOKEN
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "r1_payloads"
 DUMMY_GATEWAY_TOKEN = "DUMMY_GATEWAY_TOKEN_DO_NOT_USE"
 DUMMY_DEVICE_TOKEN = "DUMMY_DEVICE_TOKEN_DO_NOT_USE"
-TEST_GATEWAY_TOKEN = "gateway-token-for-fixture-replay"
+TEST_GATEWAY_TOKEN = STRONG_GATEWAY_TOKEN
 
 
 class ReplaySink:
@@ -57,20 +58,22 @@ def load_fixture(name: str):
 
 def test_official_helper_qr_payload_fixture_matches_generated_shape():
     fixture = load_fixture("official_helper_qr_payload.json")
+    strong_fixture = {**fixture, "token": STRONG_GATEWAY_TOKEN}
     generated = json.loads(
         build_pairing_payload(
-            hosts=fixture["ips"],
-            port=fixture["port"],
-            token=fixture["token"],
-            protocol=fixture["protocol"],
+            hosts=strong_fixture["ips"],
+            port=strong_fixture["port"],
+            token=strong_fixture["token"],
+            protocol=strong_fixture["protocol"],
         )
     )
 
     assert list(fixture) == ["type", "version", "ips", "port", "token", "protocol"]
-    assert generated == fixture
+    assert generated == strong_fixture
     assert generated["type"] == "clawdbot-gateway"
     assert generated["version"] == 1
-    assert generated["token"] == DUMMY_GATEWAY_TOKEN
+    assert fixture["token"] == DUMMY_GATEWAY_TOKEN
+    assert generated["token"] == STRONG_GATEWAY_TOKEN
 
 
 @pytest.mark.asyncio

@@ -10,8 +10,10 @@ from r1_hermes.adapter import R1HermesAdapter, R1HermesConfig
 from r1_hermes.cli import add_server_args
 from r1_hermes.frame_shape import build_frame_shape_log_fields
 
-GATEWAY_TOKEN = "gateway-token-for-frame-shape-tests"
-WRONG_TOKEN = "wrong-token-for-frame-shape-tests"
+from .token_fixtures import STRONG_GATEWAY_TOKEN, WRONG_STRONG_GATEWAY_TOKEN
+
+GATEWAY_TOKEN = STRONG_GATEWAY_TOKEN
+WRONG_TOKEN = WRONG_STRONG_GATEWAY_TOKEN
 RAW_DEVICE_ID = "r1-raw-frame-shape-device"
 RAW_PROMPT = "private prompt text that must never enter diagnostics"
 RAW_BASE64 = "QXVkaW9CeXRlc1RoYXRMb29rTGlrZUJhc2U2NERhdGE="
@@ -138,7 +140,7 @@ def test_frame_shape_fields_report_structure_without_secret_values() -> None:
 
 
 def test_frame_shape_fields_redact_token_like_method_keys_and_enum_values() -> None:
-    token_like = "gateway-token-for-frame-shape-tests"
+    token_like = STRONG_GATEWAY_TOKEN
 
     fields = build_frame_shape_log_fields(
         {

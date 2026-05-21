@@ -65,7 +65,10 @@ unless the advisory is clearly unreachable and documented.
 
 ## 1. Create a gateway token
 
-The token is a bearer secret. Do not paste it into public chats or logs.
+The token is a bearer secret. Do not paste it into public chats or logs. Runtime, QR, payload,
+probe, and `doctor` flows require a URL-safe token with at least 43 characters that does not look
+like a placeholder, dummy value, repeated string, or other low-entropy pattern. Generate it with
+32 random bytes:
 
 ```bash
 export R1_HERMES_GATEWAY_TOKEN="$(python - <<'PY'

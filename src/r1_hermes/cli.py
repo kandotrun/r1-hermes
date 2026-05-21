@@ -39,6 +39,11 @@ from .hermes_runner import HERMES_SMOKE_QUERY, HermesCliRunner, run_hermes_smoke
 from .media import DEFAULT_MEDIA_MAX_BYTES, DEFAULT_MEDIA_TTL_SECONDS
 from .qr import build_pairing_payload, write_qr_png
 from .r1_client import R1ProbeClient
+from .token_policy import (
+    gateway_token_failure_detail,
+    require_strong_gateway_token,
+    validate_gateway_token_strength,
+)
 from .toolsets import high_impact_toolset_error, high_impact_toolsets, parse_toolsets
 
 TOKEN_BYTES = 32
@@ -470,14 +475,23 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    if args.command in {"payload", "qr", "probe"} and not args.token:
-        raise SystemExit("--token or R1_HERMES_GATEWAY_TOKEN is required")
+    if args.command in {"payload", "qr", "probe"}:
+        if not args.token:
+            raise SystemExit("--token or R1_HERMES_GATEWAY_TOKEN is required")
+        try:
+            require_strong_gateway_token(args.token, context="gateway token")
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
     if args.command in {"serve", "hermes", "revoke", "rotate", "cleanup"}:
         _configure_logging()
     if args.command in {"serve", "hermes"}:
         token = os.environ.get("R1_HERMES_GATEWAY_TOKEN", "")
         if not token:
             raise SystemExit("R1_HERMES_GATEWAY_TOKEN is required")
+        try:
+            require_strong_gateway_token(token, context="gateway token")
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         try:
             config = R1HermesConfig.from_env(
                 state_dir=Path(args.state_dir),
@@ -744,6 +758,15 @@ def _doctor_token_checks(token: str) -> list[DoctorCheck]:
                 DoctorSeverity.FAIL,
                 TOKEN_ENV_NAME,
                 "missing; create a fresh bearer token before starting the gateway or probing",
+            )
+        ]
+    strength = validate_gateway_token_strength(token)
+    if not strength.ok:
+        return [
+            DoctorCheck(
+                DoctorSeverity.FAIL,
+                "gateway token strength",
+                gateway_token_failure_detail(strength.reasons),
             )
         ]
     return [
