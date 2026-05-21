@@ -19,6 +19,14 @@ def load_fixture(name: str):
     return json.loads((FIXTURE_DIR / name).read_text())
 
 
+def fixture_frame(name: str, frame_id: str):
+    fixture = load_fixture(name)
+    for frame in fixture["frames"]:
+        if frame.get("id") == frame_id:
+            return frame
+    raise AssertionError(f"frame not found: {frame_id}")
+
+
 def test_connect_fixture_payload_aliases_are_normalized_without_repr_secret_leakage():
     frame = load_fixture("connect_payload_aliases.json")
 
@@ -155,6 +163,30 @@ def test_chat_camera_image_fixture_is_parsed_as_safe_attachment_metadata():
     serialized = repr(request)
     assert "cjEtaW1hZ2U=" not in serialized
     assert "data:image" not in serialized
+
+
+def test_real_device_camera_flow_fixture_is_parsed_as_safe_attachment_metadata():
+    frame = fixture_frame("real_device_camera_media_flow.json", "chat-camera-flow-001")
+
+    replay_frame = json.loads(
+        json.dumps(frame).replace("DUMMY_BINARY_DATA_OMITTED", "cjEtaW1hZ2U=")
+    )
+    request = parse_chat_send_params(request_params(replay_frame))
+
+    assert request.message == "describe the sanitized camera image"
+    assert request.session_key == "camera-main"
+    assert request.idempotency_key == "camera-run-001"
+    assert len(request.attachments) == 1
+    attachment = request.attachments[0]
+    assert attachment.mime_type == "image/jpeg"
+    assert attachment.source_field == "message.content.data"
+    assert attachment.filename == "r1-camera.jpg"
+    assert attachment.extension == "jpg"
+    assert attachment.size_bytes == len(b"r1-image")
+    assert attachment.content_hash == f"sha256:{hashlib.sha256(b'r1-image').hexdigest()[:16]}"
+    assert attachment.data == b"r1-image"
+    assert "cjEtaW1hZ2U=" not in repr(request)
+    assert "data:image" not in repr(request)
 
 
 @pytest.mark.parametrize(

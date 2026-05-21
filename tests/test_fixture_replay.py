@@ -227,3 +227,50 @@ async def test_camera_image_fixture_flow_replays_as_attachment_without_secret_le
     assert DUMMY_GATEWAY_TOKEN not in result.serialized_frames
     assert DUMMY_DEVICE_TOKEN not in result.serialized_frames
     assert result.device_token not in result.serialized_frames
+
+
+@pytest.mark.asyncio
+async def test_real_device_camera_media_flow_fixture_replays_as_attachment_without_leakage(
+    replay_gateway,
+):
+    url, sink = replay_gateway
+
+    result = await replay_fixture_flow(
+        url=url,
+        fixture_dir=FIXTURE_DIR,
+        flow=FixtureReplayFlow(
+            connect_fixture="real_device_camera_media_flow.json",
+            connect_frame_id="connect-camera-flow-001",
+            chat_fixture="real_device_camera_media_flow.json",
+            chat_frame_id="chat-camera-flow-001",
+            expected_device_id="r1-camera-flow",
+            expected_message="describe the sanitized camera image",
+            expected_session_key="camera-main",
+            expected_run_id="camera-run-001",
+            expected_ack_events=("connect.ok", "node.pair.approved"),
+        ),
+        gateway_token=TEST_GATEWAY_TOKEN,
+    )
+
+    assert result.response_text == (
+        "fixture echo: r1-camera-flow/camera-main: "
+        "describe the sanitized camera image (1 attachments)"
+    )
+    assert result.run_id == "camera-run-001"
+    assert len(sink.messages) == 1
+    message = sink.messages[0]
+    assert message["text"] == "describe the sanitized camera image"
+    assert message["device_id"] == "r1-camera-flow"
+    assert message["session_key"] == "camera-main"
+    assert len(message["attachments"]) == 1
+    attachment = message["attachments"][0]
+    assert attachment.mime_type == "image/jpeg"
+    assert attachment.size_bytes == len(b"r1-image")
+    assert attachment.content_hash.startswith("sha256:")
+    assert "cjEtaW1hZ2U=" not in repr(result)
+    assert "cjEtaW1hZ2U=" not in result.serialized_frames
+    assert "data:image" not in result.serialized_frames
+    assert TEST_GATEWAY_TOKEN not in result.serialized_frames
+    assert DUMMY_GATEWAY_TOKEN not in result.serialized_frames
+    assert DUMMY_DEVICE_TOKEN not in result.serialized_frames
+    assert result.device_token not in result.serialized_frames

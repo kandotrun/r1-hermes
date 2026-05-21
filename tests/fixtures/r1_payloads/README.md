@@ -15,6 +15,7 @@ Rules for adding captures:
 
 Current fixtures cover the official helper QR payload shape, the standard helper `connect` shape,
 OpenClaw/community `gateway.connect` variants, `chat.send` alias parsing, `chat.history`
-session-key alias parsing, text content parts, and unsupported media content parts. These are
-sanitized compatibility samples, not raw captures; media fixtures use dummy placeholder strings
-only.
+session-key alias parsing, text content parts, unsupported media content parts, and the sanitized
+camera media flow fixture used to verify image attachment replay. These are sanitized compatibility
+samples, not raw captures; media fixtures use dummy placeholder strings or the tiny public
+`r1-image` base64 sentinel only.

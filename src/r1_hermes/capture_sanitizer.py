@@ -165,6 +165,8 @@ def _sanitize_child(key: str, child: Any, *, state: _SanitizeState, context: _Co
     if key in MESSAGE_TEXT_KEYS and isinstance(child, str):
         return _sanitized_text_for_context(context)
     if key in BINARY_DATA_KEYS and isinstance(child, str):
+        if child.strip().lower().startswith("data:image/"):
+            return f"data:image/jpeg;base64,{DUMMY_BINARY_DATA}"
         return DUMMY_BINARY_DATA
     return _sanitize(child, state=state, context=context.child(key=key, value=child))
 
@@ -423,7 +425,7 @@ def _is_public_binary_placeholder(value: str) -> bool:
         encoded = encoded.strip()
         return bool(
             separator
-            and (encoded == DUMMY_IMAGE_BASE64 or encoded == DUMMY_BINARY_DATA)
+            and (encoded == DUMMY_IMAGE_BASE64 or _is_public_binary_placeholder(encoded))
         )
     return False
 
