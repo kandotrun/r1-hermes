@@ -29,6 +29,24 @@ def test_ci_builds_and_installs_distributions() -> None:
     assert "python -m pip check" in workflow
 
 
+def test_ci_runs_installed_artifact_qr_extra_smoke_safely() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    for required in (
+        "RUNNER_TEMP/r1-hermes-wheel-qr",
+        "RUNNER_TEMP/r1-hermes-sdist-qr",
+        'pip install "${wheel_artifacts[0]}[qr]"',
+        'pip install "${sdist_artifacts[0]}[qr]"',
+        "qr --host 127.0.0.1 --port 18789 --protocol ws",
+        "dummy_qr_token=\"dummy-ci-qr-token-do-not-use\"",
+        'startswith(b"\\x89PNG\\r\\n\\x1a\\n")',
+        "QR smoke printed secret payload material",
+    ):
+        assert required in workflow
+
+    assert "--print-payload" not in workflow
+
+
 def test_ci_does_not_upload_distribution_artifacts() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
