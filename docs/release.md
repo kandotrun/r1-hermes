@@ -20,9 +20,12 @@ even when the public API does not change.
 ## Release workflow
 
 The GitHub release workflow runs on `v*.*.*` tags and on manual `workflow_dispatch` dry runs. It
-builds from a clean checkout, verifies that a tag matches `pyproject.toml`, builds both
-distributions, inspects archive contents, creates dependency reports, writes checksums, and asks
-GitHub to create provenance attestations.
+builds from a clean checkout and verifies that a tag matches `pyproject.toml`. The release tags are self-verifying in CI:
+before any artifact can be attested or uploaded, the release job runs the
+same security-relevant gates as the normal CI path: editable install and metadata smoke checks,
+dependency audit, CLI help smoke, lint, pytest, compileall, archive inspection, and wheel/sdist
+install smoke verification. Only after those commands pass does it create dependency reports,
+write checksums, request GitHub provenance attestations, and publish a tagged GitHub release.
 
 Local release-equivalent build:
 
@@ -30,6 +33,29 @@ Local release-equivalent build:
 rm -rf dist build
 python -m build --sdist --wheel
 ```
+
+Release-job verification commands that must appear in logs before artifact upload:
+
+```bash
+python -m pip install -e '.[dev,qr]'
+python -m pip_audit . --strict --progress-spinner off
+python -m pip_audit --local --progress-spinner off --skip-editable
+r1-hermes --help
+r1-hermes serve --help
+r1-hermes hermes --help
+r1-hermes payload --help
+r1-hermes qr --help
+r1-hermes probe --help
+python -m ruff check .
+python -m pytest -q
+python -m compileall -q src tests
+python -m build --sdist --wheel
+python -m pip check
+r1-hermes --help
+```
+
+The final `python -m pip check` and `r1-hermes --help` checks are run from fresh temporary wheel
+and sdist virtual environments, not from the editable checkout.
 
 Expected public artifacts:
 
