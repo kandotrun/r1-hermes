@@ -39,6 +39,11 @@ Prefer one of:
 - direct bind to a specific Tailscale IP such as `100.x.y.z` when the R1 reaches the host over a tailnet
 - LAN bind only on a trusted isolated network
 
+If none of those private or proxy-controlled patterns can satisfy the Rabbit R1 path, use
+[`public-wss-native-tls.md`](public-wss-native-tls.md) before running a proxyless public listener.
+That runbook keeps native `wss://`, Let's Encrypt certificate permissions,
+`R1_HERMES_ALLOWED_DEVICE_IDS`, renewal checks, and rollback in one security review.
+
 Wildcard bind hosts such as `0.0.0.0`, `::`, and numeric aliases for all interfaces fail closed
 unless `--allow-public-bind` or `R1_HERMES_ALLOW_PUBLIC_BIND=1` is set. Do not use that opt-in for
 convenience. Use it only after reviewing the network boundary, firewall, and client path, and do

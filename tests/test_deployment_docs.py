@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -5,7 +6,8 @@ README = ROOT / "README.md"
 RUNNING = ROOT / "docs" / "running.md"
 SECURITY = ROOT / "docs" / "security.md"
 SYSTEMD = ROOT / "docs" / "systemd-user-service.md"
-TARGET_DOCS = (README, RUNNING, SECURITY, SYSTEMD)
+PUBLIC_WSS = ROOT / "docs" / "public-wss-native-tls.md"
+TARGET_DOCS = (README, RUNNING, SECURITY, SYSTEMD, PUBLIC_WSS)
 
 
 def _read(path: Path) -> str:
@@ -82,3 +84,64 @@ def test_systemd_docs_cover_tailscale_serve_and_proxy_checks() -> None:
         "From an untrusted network",
     ):
         assert required in systemd
+
+
+def test_public_wss_native_tls_runbook_covers_security_acceptance_criteria() -> None:
+    runbook = _read(PUBLIC_WSS)
+
+    for required in (
+        "Public native WSS runbook",
+        "Prefer Tailscale or private networking",
+        "sslip.io",
+        "custom domain",
+        "Let's Encrypt",
+        "certbot certonly --standalone",
+        "R1_HERMES_TLS_CERT_FILE",
+        "R1_HERMES_TLS_KEY_FILE",
+        "chmod 640",
+        "chgrp r1-hermes-certs",
+        "R1_HERMES_ALLOWED_DEVICE_IDS",
+        "Do not paste raw device IDs",
+        "ProtectHome=read-only",
+        "ReadWritePaths=",
+        "systemd-analyze --user verify",
+        "certbot renew --dry-run",
+        "openssl x509 -checkend",
+        "r1-hermes probe --url wss://",
+        "Rollback",
+        "shred -u ./r1-hermes-secret.png 2>/dev/null || rm -f ./r1-hermes-secret.png",
+    ):
+        assert required in runbook
+
+    forbidden_examples = (
+        "--print-payload",
+        "Authorization: Bearer",
+        "R1_HERMES_GATEWAY_TOKEN=",
+        "r1-real-device-id",
+    )
+    for block in _fenced_blocks(runbook):
+        for forbidden in forbidden_examples:
+            assert forbidden not in block
+
+
+def test_user_facing_docs_link_public_wss_runbook() -> None:
+    for doc in (README, RUNNING, SECURITY, SYSTEMD):
+        assert "public-wss-native-tls.md" in _read(doc)
+
+
+def test_relative_markdown_links_resolve() -> None:
+    docs = (README, *sorted((ROOT / "docs").glob("*.md")))
+    link_pattern = re.compile(r"!?!\[[^\]]+\]\(([^)]+)\)")
+
+    for doc in docs:
+        text = _read(doc)
+        for match in link_pattern.finditer(text):
+            target = match.group(1).strip()
+            if target.startswith(("http://", "https://", "mailto:", "#")):
+                continue
+            target = target.split("#", 1)[0]
+            if not target:
+                continue
+            if target.startswith("<") and target.endswith(">"):
+                target = target[1:-1]
+            assert (doc.parent / target).resolve().exists(), f"broken link in {doc}: {target}"

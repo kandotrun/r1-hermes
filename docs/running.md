@@ -98,6 +98,12 @@ interfaces unless you explicitly acknowledge the exposure with `--allow-public-b
 boundary only. Prefer `127.0.0.1` with Tailscale Serve, `127.0.0.1` behind a reverse proxy with
 mTLS or IP allowlisting, or a concrete Tailscale/LAN IP.
 
+If Rabbit R1 must connect to a public endpoint without a reverse proxy, do not expose cleartext
+`ws://`. Use the native TLS public WSS runbook in
+[`public-wss-native-tls.md`](public-wss-native-tls.md) for hostname selection, Let's Encrypt
+issuance, certificate permissions, `R1_HERMES_ALLOWED_DEVICE_IDS`, systemd compatibility overrides,
+renewal checks, and rollback.
+
 ### Tailscale Serve recipe
 
 Use this when the Rabbit R1 can reach a Tailscale HTTPS service name. `r1-hermes` stays bound to
