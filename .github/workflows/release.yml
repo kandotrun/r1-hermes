@@ -173,7 +173,7 @@ jobs:
           if any(value in output for value in (dummy_qr_token, '"token"', "clawdbot-gateway")):
               raise SystemExit("QR smoke printed secret payload material")
           if qr_exit != 0:
-              raise SystemExit("QR smoke command failed")
+              raise SystemExit(f"QR smoke command failed with safe output:\n{output}")
           if not qr_output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
               raise SystemExit("QR smoke did not produce a PNG")
           if "Wrote secret QR PNG:" not in output:
@@ -218,7 +218,7 @@ jobs:
           if any(value in output for value in (dummy_qr_token, '"token"', "clawdbot-gateway")):
               raise SystemExit("QR smoke printed secret payload material")
           if qr_exit != 0:
-              raise SystemExit("QR smoke command failed")
+              raise SystemExit(f"QR smoke command failed with safe output:\n{output}")
           if not qr_output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
               raise SystemExit("QR smoke did not produce a PNG")
           if "Wrote secret QR PNG:" not in output:
