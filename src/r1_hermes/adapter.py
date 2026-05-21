@@ -24,6 +24,7 @@ from aiohttp import WSMsgType, web
 
 from .audit import audit_log, hash_identifier
 from .chat_errors import ChatRunError, ChatRunTimeoutError
+from .frame_shape import build_frame_shape_log_fields
 from .payloads import (
     PayloadParseError,
     parse_chat_history_params,
@@ -90,6 +91,7 @@ class R1HermesConfig:
     tls_cert_file: Path | None = None
     tls_key_file: Path | None = None
     allowed_device_ids: frozenset[str] | tuple[str, ...] | list[str] | None = None
+    frame_shape_logging: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -123,6 +125,7 @@ class R1HermesConfig:
         tls_cert_file: Path | None = None,
         tls_key_file: Path | None = None,
         allowed_device_ids: list[str] | tuple[str, ...] | frozenset[str] | None = None,
+        frame_shape_logging: bool | None = None,
     ) -> "R1HermesConfig":
         token = os.environ.get("R1_HERMES_GATEWAY_TOKEN", "")
         if not token:
@@ -257,6 +260,11 @@ class R1HermesConfig:
                 _allowed_device_ids_from_env()
                 if allowed_device_ids is None
                 else allowed_device_ids
+            ),
+            frame_shape_logging=(
+                _env_flag("R1_HERMES_FRAME_SHAPE_LOGGING")
+                if frame_shape_logging is None
+                else frame_shape_logging
             ),
         )
 
@@ -869,6 +877,11 @@ class R1HermesAdapter:
 
         method = frame.get("method")
         rid = frame.get("id")
+        self._log_frame_shape(
+            frame,
+            authenticated=authenticated,
+            device_id=device_id if authenticated else "",
+        )
         if frame.get("type") != "req":
             if not authenticated:
                 audit_log("warning", "auth.parser_error", error_code="BAD_REQUEST")
@@ -988,6 +1001,25 @@ class R1HermesAdapter:
             task.add_done_callback(lambda done: _discard_finished_task(active_chat_tasks, done))
         else:
             await _send_error(ws, rid, "UNKNOWN_METHOD", "unsupported method")
+
+    def _log_frame_shape(
+        self,
+        frame: dict[str, Any],
+        *,
+        authenticated: bool,
+        device_id: str = "",
+    ) -> None:
+        if not self.config.frame_shape_logging:
+            return
+        audit_log(
+            "info",
+            "frame.shape",
+            **build_frame_shape_log_fields(
+                frame,
+                authenticated=authenticated,
+                device_id_hash=hash_identifier(device_id) if authenticated and device_id else "",
+            ),
+        )
 
     async def _handle_chat_history(
         self, ws: web.WebSocketResponse, rid: Any, frame: dict[str, Any]

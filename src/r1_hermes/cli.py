@@ -112,6 +112,12 @@ def add_server_args(parser: argparse.ArgumentParser) -> None:
         help="Include diagnostic paired-device counts in /healthz responses",
     )
     parser.add_argument(
+        "--frame-shape-logging",
+        action="store_true",
+        default=_env_flag("R1_HERMES_FRAME_SHAPE_LOGGING"),
+        help="Log sanitized request frame shapes for Rabbit/OpenClaw compatibility debugging",
+    )
+    parser.add_argument(
         "--tls-cert-file",
         default=os.environ.get("R1_HERMES_TLS_CERT_FILE", ""),
         help="PEM certificate chain for native TLS/WSS listener; requires --tls-key-file",
@@ -406,6 +412,7 @@ def main() -> None:
                 tls_cert_file=Path(args.tls_cert_file) if args.tls_cert_file else None,
                 tls_key_file=Path(args.tls_key_file) if args.tls_key_file else None,
                 allowed_device_ids=args.allowed_device_ids,
+                frame_shape_logging=args.frame_shape_logging,
             )
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc

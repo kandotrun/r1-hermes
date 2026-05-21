@@ -160,11 +160,19 @@ operator-actionable rejects such as malformed payloads, auth failures, rate limi
 and Hermes subprocess exits; `ERROR` is for authenticated chat runs that return a generic failure to
 the device.
 
+`R1_HERMES_FRAME_SHAPE_LOGGING=1` or `--frame-shape-logging` adds opt-in `frame.shape` audit
+events for compatibility debugging. These events are limited to method names, key sets, list
+lengths, string lengths, safe enum-like protocol values, media-field presence, and media-field
+paths. They must not contain bearer tokens, raw device IDs, prompts, URLs, base64 strings, or media
+bytes. Enabling the flag does not change authentication, method allowlisting, media handling, or
+Hermes execution; unknown media methods still fail closed.
+
 Example redacted events:
 
 ```json
 {"event":"auth.failure","level":"warning","method":"connect","reason":"token_mismatch","device_id_hash":"sha256:0123456789abcdef","ts_ms":1710000000000}
 {"event":"busy_rejected","level":"warning","reason":"global_concurrency","device_id_hash":"sha256:0123456789abcdef","global_inflight":2,"global_limit":2,"ts_ms":1710000000000}
+{"event":"frame.shape","frame_type":"req","level":"info","media_field_paths":["$.params.content[0].data"],"media_present":true,"method":"media.upload","phase":"authenticated","shape":{"kind":"object","keys":["id","method","params","type"]},"ts_ms":1710000000000}
 ```
 
 When using systemd, read audit lines from journald and keep retention bounded:
