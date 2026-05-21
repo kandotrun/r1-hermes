@@ -32,10 +32,12 @@ from .adapter import (
 from .hermes_runner import HERMES_SMOKE_QUERY, HermesCliRunner, run_hermes_smoke
 from .qr import build_pairing_payload, write_qr_png
 from .r1_client import R1ProbeClient
-from .toolsets import high_impact_toolset_error, high_impact_toolsets
+from .toolsets import high_impact_toolset_error, high_impact_toolsets, parse_toolsets
 
 TOKEN_BYTES = 32
 TOKEN_ENV_NAME = "R1_HERMES_GATEWAY_TOKEN"  # noqa: S105 - env var name, not a secret
+DEFAULT_R1_TOOLSETS = ("safe",)
+DEFAULT_SLACK_EQUIVALENT_TOOLSETS = ("safe", "web", "terminal", "file")
 _create_subprocess_exec = asyncio.create_subprocess_exec
 
 
@@ -181,6 +183,33 @@ def add_doctor_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--state-dir", default=str(Path.home() / ".r1-hermes"))
     parser.add_argument("--host", default=os.environ.get("R1_HERMES_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("R1_HERMES_PORT", "18789")))
+    parser.add_argument(
+        "--toolsets",
+        default=os.environ.get("R1_HERMES_TOOLSETS", _format_toolsets(DEFAULT_R1_TOOLSETS)),
+        help="Effective Rabbit R1 Hermes toolsets to check, defaulting to R1_HERMES_TOOLSETS",
+    )
+    parser.add_argument(
+        "--slack-equivalent-toolsets",
+        default=os.environ.get(
+            "R1_HERMES_SLACK_EQUIVALENT_TOOLSETS",
+            _format_toolsets(DEFAULT_SLACK_EQUIVALENT_TOOLSETS),
+        ),
+        help=(
+            "Configured Slack-equivalent toolset bundle for parity checks; defaults to "
+            "R1_HERMES_SLACK_EQUIVALENT_TOOLSETS or the built-in bundle"
+        ),
+    )
+    parser.add_argument(
+        "--require-slack-equivalent-toolsets",
+        action="store_true",
+        help="Fail diagnostics unless the effective R1 toolsets exactly match the Slack bundle",
+    )
+    parser.add_argument(
+        "--allow-high-impact-toolsets",
+        action="store_true",
+        default=_env_flag("R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS"),
+        help="Acknowledge high-impact R1 toolsets during diagnostics after review",
+    )
     parser.add_argument(
         "--allow-public-bind",
         action="store_true",
@@ -488,6 +517,14 @@ async def _run_doctor(args: argparse.Namespace) -> int:
             allow_public_bind=bool(args.allow_public_bind),
         )
     )
+    checks.extend(
+        _doctor_toolset_checks(
+            toolsets=args.toolsets,
+            slack_equivalent_toolsets=args.slack_equivalent_toolsets,
+            allow_high_impact_toolsets=bool(args.allow_high_impact_toolsets),
+            require_slack_equivalent_toolsets=bool(args.require_slack_equivalent_toolsets),
+        )
+    )
     checks.extend(_doctor_qr_output_checks(Path(args.qr_output)) if args.qr_output else [])
 
     if args.skip_hermes_smoke:
@@ -719,6 +756,107 @@ def _doctor_host_port_checks(
             )
         )
     return checks
+
+
+def _doctor_toolset_checks(
+    *,
+    toolsets: str | tuple[str, ...] | list[str] | None,
+    slack_equivalent_toolsets: str | tuple[str, ...] | list[str] | None,
+    allow_high_impact_toolsets: bool,
+    require_slack_equivalent_toolsets: bool,
+) -> list[DoctorCheck]:
+    checks: list[DoctorCheck] = []
+    requested = parse_toolsets(toolsets)
+    slack_bundle = parse_toolsets(slack_equivalent_toolsets)
+    effective = requested or DEFAULT_R1_TOOLSETS
+    expected = slack_bundle or DEFAULT_SLACK_EQUIVALENT_TOOLSETS
+
+    risky = high_impact_toolsets(effective)
+    if risky:
+        if allow_high_impact_toolsets:
+            checks.append(
+                DoctorCheck(
+                    DoctorSeverity.PASS,
+                    "high-impact toolset opt-in",
+                    "requested high-impact toolsets "
+                    f"{_format_toolsets(risky)} are explicitly allowed by "
+                    "--allow-high-impact-toolsets or R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1",
+                )
+            )
+        else:
+            checks.append(
+                DoctorCheck(
+                    DoctorSeverity.FAIL,
+                    "high-impact toolset opt-in",
+                    "requested high-impact toolsets "
+                    f"{_format_toolsets(risky)}, but "
+                    "R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS is not set; review the deployment "
+                    "boundary, then pass --allow-high-impact-toolsets or set the env var",
+                )
+            )
+    else:
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.PASS,
+                "high-impact toolset opt-in",
+                "no high-impact R1 toolsets requested",
+            )
+        )
+
+    missing, extra = _toolset_delta(effective, expected)
+    effective_text = _format_toolsets(effective)
+    expected_text = _format_toolsets(expected)
+    if not missing and not extra:
+        checks.append(
+            DoctorCheck(
+                DoctorSeverity.PASS,
+                "Slack-equivalent toolsets",
+                f"effective R1 toolsets match Slack-equivalent bundle: {effective_text}",
+            )
+        )
+        return checks
+
+    parts = [
+        f"effective R1 toolsets {effective_text} differ from "
+        f"Slack-equivalent bundle {expected_text}"
+    ]
+    if missing:
+        parts.append(f"missing: {_format_toolsets(missing)}")
+    if extra:
+        parts.append(f"extra: {_format_toolsets(extra)}")
+    parts.append(
+        "use --toolsets or R1_HERMES_TOOLSETS to choose safe/minimal or intentionally reviewed "
+        "Slack-equivalent mode"
+    )
+    severity = DoctorSeverity.FAIL if require_slack_equivalent_toolsets else DoctorSeverity.WARN
+    checks.append(DoctorCheck(severity, "Slack-equivalent toolsets", "; ".join(parts)))
+    return checks
+
+
+def _toolset_delta(
+    actual: tuple[str, ...], expected: tuple[str, ...]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    actual_normalized = {_normalize_toolset_name(toolset) for toolset in actual}
+    expected_normalized = {_normalize_toolset_name(toolset) for toolset in expected}
+    missing = tuple(
+        toolset
+        for toolset in expected
+        if _normalize_toolset_name(toolset) not in actual_normalized
+    )
+    extra = tuple(
+        toolset
+        for toolset in actual
+        if _normalize_toolset_name(toolset) not in expected_normalized
+    )
+    return missing, extra
+
+
+def _normalize_toolset_name(toolset: str) -> str:
+    return str(toolset).strip().lower().replace("_", "-")
+
+
+def _format_toolsets(toolsets: tuple[str, ...] | list[str]) -> str:
+    return ",".join(toolsets) if toolsets else "(none)"
 
 
 async def _doctor_hermes_checks(*, command: str, timeout_seconds: float) -> list[DoctorCheck]:

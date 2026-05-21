@@ -70,6 +70,102 @@ def test_doctor_reports_missing_gateway_token_without_leaking_values(monkeypatch
     assert "token=" not in out
 
 
+def test_doctor_default_slack_equivalent_toolset_bundle_is_explicit():
+    assert cli.DEFAULT_SLACK_EQUIVALENT_TOOLSETS == ("safe", "web", "terminal", "file")
+
+
+def test_doctor_fails_when_required_slack_equivalent_toolsets_drift(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "doctor",
+            "--state-dir",
+            str(tmp_path),
+            "--toolsets",
+            "safe,web",
+            "--require-slack-equivalent-toolsets",
+            "--skip-hermes-smoke",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Slack-equivalent toolsets" in out
+    assert "missing: terminal,file" in out
+    assert "extra:" not in out
+    assert "DUMMY_GATEWAY_TOKEN_DO_NOT_USE" not in out
+
+
+def test_doctor_passes_when_required_slack_equivalent_toolsets_match_with_env_opt_in(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setenv("R1_HERMES_TOOLSETS", "safe,web,terminal,file")
+    monkeypatch.setenv("R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS", "1")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "doctor",
+            "--state-dir",
+            str(tmp_path),
+            "--require-slack-equivalent-toolsets",
+            "--skip-hermes-smoke",
+        ],
+    )
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "PASS" in out
+    assert "Slack-equivalent toolsets" in out
+    assert "safe,web,terminal,file" in out
+    assert "R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1" in out
+
+
+def test_doctor_fails_when_high_impact_toolsets_requested_without_allow_env(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    monkeypatch.delenv("R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS", raising=False)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "DUMMY_GATEWAY_TOKEN_DO_NOT_USE")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "doctor",
+            "--state-dir",
+            str(tmp_path),
+            "--toolsets",
+            "safe,terminal,file",
+            "--skip-hermes-smoke",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "high-impact toolset opt-in" in out
+    assert "terminal,file" in out
+    assert "R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS is not set" in out
+    assert "--allow-high-impact-toolsets" in out
+    assert "DUMMY_GATEWAY_TOKEN_DO_NOT_USE" not in out
+
+
 def test_doctor_fails_on_unsafe_state_dir_permissions(monkeypatch, capsys, tmp_path):
     state_dir = tmp_path / "state"
     state_dir.mkdir()

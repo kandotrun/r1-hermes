@@ -29,9 +29,10 @@ hermes chat --quiet --source r1-hermes-smoke --toolsets safe --query 'Reply with
 ```
 
 You can also run the built-in diagnostics before pairing. `doctor` checks token presence, state
-directory and secret-file permissions, bind host/port safety, Hermes CLI availability, optional
-gateway probing, and an optional QR output path without printing bearer values, QR payload JSON,
-device tokens, raw auth headers, or the smoke-test prompt.
+directory and secret-file permissions, bind host/port safety, effective R1 toolset parity with the
+configured Slack-equivalent bundle, Hermes CLI availability, optional gateway probing, and an
+optional QR output path without printing bearer values, QR payload JSON, device tokens, raw auth
+headers, or the smoke-test prompt.
 
 ```bash
 r1-hermes doctor \
@@ -43,7 +44,8 @@ r1-hermes doctor \
 
 Exit code policy: `FAIL` checks return non-zero; `WARN` checks return zero but should be reviewed.
 Expected first-run warnings include a missing state directory that the gateway will create as
-`0700`, a skipped gateway probe when `--url` is omitted, and a localhost reachability reminder.
+`0700`, a safe/minimal toolset list that does not match Slack-equivalent access, a skipped gateway
+probe when `--url` is omitted, and a localhost reachability reminder.
 
 ## Network pairing
 
@@ -466,6 +468,44 @@ Default toolset is `safe`. Lower-risk expansion such as web access is allowed wh
 ```bash
 r1-hermes hermes --toolsets safe,web
 ```
+
+Run `doctor` as a preflight before pairing or restarting so drift is visible in one command:
+
+```bash
+r1-hermes doctor \
+  --host 127.0.0.1 \
+  --port 18789 \
+  --toolsets safe \
+  --skip-hermes-smoke
+```
+
+That safe/minimal mode intentionally differs from the Slack-equivalent bundle, so doctor reports a
+warning while still exiting zero unless `--require-slack-equivalent-toolsets` is set. Use it for
+normal Rabbit R1 operation unless the operator has explicitly approved broader access.
+
+For an intentionally reviewed Slack-equivalent mode, make the configured bundle explicit and keep
+the high-impact approval separate:
+
+```bash
+export R1_HERMES_TOOLSETS=safe,web,terminal,file
+export R1_HERMES_SLACK_EQUIVALENT_TOOLSETS=safe,web,terminal,file
+export R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1
+
+r1-hermes doctor \
+  --require-slack-equivalent-toolsets \
+  --skip-hermes-smoke
+
+r1-hermes hermes \
+  --toolsets "$R1_HERMES_TOOLSETS" \
+  --allow-high-impact-toolsets
+```
+
+The built-in Slack-equivalent bundle is `safe,web,terminal,file`. If the actual Slack deployment
+uses a different reviewed bundle, set `R1_HERMES_SLACK_EQUIVALENT_TOOLSETS` or pass
+`--slack-equivalent-toolsets` to doctor. Without `R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1` or
+`--allow-high-impact-toolsets`, doctor fails whenever the effective R1 toolsets include high-impact
+entries, which catches the same misconfiguration that would prevent `r1-hermes hermes` from
+starting.
 
 High-impact toolsets fail closed for Rabbit R1 sessions. Requests such as
 `--toolsets terminal,file`, or `R1_HERMES_TOOLSETS=terminal,file`, are rejected unless the operator

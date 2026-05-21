@@ -100,13 +100,22 @@ r1-hermes doctor \
   --state-dir ~/.r1-hermes \
   --host 127.0.0.1 \
   --port 18789 \
+  --toolsets safe \
   --qr-output ./r1-hermes-secret.png
 ```
 
 Expected status for a first local run may include warnings for a not-yet-created state directory,
-skipped gateway probe, or localhost reachability. Missing `R1_HERMES_GATEWAY_TOKEN`, unsafe
-state-file permissions, wildcard binds without `--allow-public-bind`, and a missing Hermes CLI are
-hard failures.
+safe/minimal R1 toolsets differing from the configured Slack-equivalent bundle, skipped gateway
+probe, or localhost reachability. Missing `R1_HERMES_GATEWAY_TOKEN`, unsafe state-file permissions,
+wildcard binds without `--allow-public-bind`, high-impact toolsets without
+`R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1`, and a missing Hermes CLI are hard failures.
+
+For normal setup, keep `--toolsets safe`. If the human explicitly approves Slack-equivalent R1
+access, set `R1_HERMES_TOOLSETS=safe,web,terminal,file`, set
+`R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1`, and run doctor with
+`--require-slack-equivalent-toolsets` before restarting the gateway. If the local Slack deployment
+uses a different reviewed bundle, set `R1_HERMES_SLACK_EQUIVALENT_TOOLSETS` to that exact comma-list
+instead of relying on memory.
 
 ## 5. Local smoke test
 
