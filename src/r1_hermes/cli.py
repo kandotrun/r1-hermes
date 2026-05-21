@@ -12,6 +12,7 @@ import stat
 import sys
 from dataclasses import dataclass
 from enum import Enum
+from importlib import resources
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -39,6 +40,8 @@ from .toolsets import high_impact_toolset_error, high_impact_toolsets, parse_too
 
 TOKEN_BYTES = 32
 TOKEN_ENV_NAME = "R1_HERMES_GATEWAY_TOKEN"  # noqa: S105 - env var name, not a secret
+SYSTEMD_SERVICE_ASSET = "r1-hermes.service"
+SYSTEMD_ENV_ASSET = "r1-hermes.env.example"
 DEFAULT_R1_TOOLSETS = ("safe",)
 DEFAULT_SLACK_EQUIVALENT_TOOLSETS = ("safe", "web", "terminal", "file")
 _create_subprocess_exec = asyncio.create_subprocess_exec
@@ -271,6 +274,24 @@ def add_doctor_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_install_systemd_user_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--unit-output",
+        default=str(Path.home() / ".config" / "systemd" / "user" / "r1-hermes.service"),
+        help="Destination path for the systemd user unit template",
+    )
+    parser.add_argument(
+        "--env-output",
+        default=str(Path.home() / ".config" / "r1-hermes" / "r1-hermes.env"),
+        help="Destination path for the secret-bearing environment file template",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace existing output files instead of failing closed",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="r1-hermes")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -372,6 +393,12 @@ def main() -> None:
     cleanup = sub.add_parser("cleanup", help="Prune expired Rabbit R1 device records")
     cleanup.add_argument("--state-dir", default=str(Path.home() / ".r1-hermes"))
     add_device_expiry_args(cleanup)
+
+    install_systemd = sub.add_parser(
+        "install-systemd-user",
+        help="Install packaged systemd user-service and env templates",
+    )
+    add_install_systemd_user_args(install_systemd)
 
     doctor = sub.add_parser("doctor", help="Run secret-safe setup and pairing diagnostics")
     add_doctor_args(doctor)
@@ -533,6 +560,15 @@ def main() -> None:
         )
         removed = state.prune_expired()
         print(f"Pruned expired devices: {removed}")
+    elif args.command == "install-systemd-user":
+        installed = _install_systemd_user_templates(
+            unit_output=Path(args.unit_output),
+            env_output=Path(args.env_output),
+            overwrite=bool(args.overwrite),
+        )
+        print(f"Installed systemd user unit: {installed.unit_path}")
+        print(f"Installed env template: {installed.env_path}")
+        print("Edit the env file locally and replace the gateway-token placeholder before start.")
     elif args.command == "doctor":
         exit_code = asyncio.run(_run_doctor(args))
         if exit_code:
@@ -550,6 +586,40 @@ async def _run_forever(adapter: R1HermesAdapter, *, ready_file: Path | None = No
             await asyncio.sleep(3600)
     finally:
         await adapter.stop()
+
+
+@dataclass(frozen=True)
+class InstalledSystemdUserTemplates:
+    unit_path: Path
+    env_path: Path
+
+
+def _systemd_asset_text(name: str) -> str:
+    return (resources.files("r1_hermes") / "systemd" / name).read_text(encoding="utf-8")
+
+
+def _write_template(path: Path, text: str, *, mode: int, overwrite: bool) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    os.chmod(path, mode)
+    return path
+
+
+def _check_template_destination(path: Path, *, overwrite: bool) -> None:
+    if path.exists() and not overwrite:
+        raise SystemExit(f"file already exists; refusing to overwrite: {path}")
+
+
+def _install_systemd_user_templates(
+    *, unit_output: Path, env_output: Path, overwrite: bool = False
+) -> InstalledSystemdUserTemplates:
+    unit_text = _systemd_asset_text(SYSTEMD_SERVICE_ASSET)
+    env_text = _systemd_asset_text(SYSTEMD_ENV_ASSET)
+    _check_template_destination(unit_output, overwrite=overwrite)
+    _check_template_destination(env_output, overwrite=overwrite)
+    unit_path = _write_template(unit_output, unit_text, mode=0o644, overwrite=overwrite)
+    env_path = _write_template(env_output, env_text, mode=0o600, overwrite=overwrite)
+    return InstalledSystemdUserTemplates(unit_path=unit_path, env_path=env_path)
 
 
 async def _run_doctor(args: argparse.Namespace) -> int:

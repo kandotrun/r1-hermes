@@ -1,0 +1,50 @@
+[Unit]
+Description=Rabbit R1 to Hermes Agent gateway
+Documentation=https://github.com/kandotrun/r1-hermes/blob/main/docs/systemd-user-service.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/r1-hermes/r1-hermes.env
+# StateDirectory maps to %S/r1-hermes for user services. Keep the process out
+# of $HOME so relative paths cannot write across the operator's home tree.
+WorkingDirectory=%S/r1-hermes
+UMask=0077
+RuntimeDirectory=r1-hermes
+RuntimeDirectoryMode=0700
+StateDirectory=r1-hermes
+StateDirectoryMode=0700
+ExecStartPre=/usr/bin/rm -f %t/r1-hermes/ready
+ExecStart=%h/.local/bin/r1-hermes hermes --host ${R1_HERMES_HOST} --port ${R1_HERMES_PORT} --state-dir %S/r1-hermes --ready-file %t/r1-hermes/ready --toolsets ${R1_HERMES_TOOLSETS} --timeout ${R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS} --heartbeat-interval ${R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS} --global-concurrency ${R1_HERMES_GLOBAL_CONCURRENCY} --per-device-concurrency ${R1_HERMES_PER_DEVICE_CONCURRENCY}
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# Hide the rest of $HOME from the gateway. The user install is exposed
+# read-only; editable installs from arbitrary source trees need an explicit
+# local drop-in instead of broad home access.
+ProtectHome=tmpfs
+BindReadOnlyPaths=%h/.local/bin %h/.local/lib
+# r1-hermes writes paired-device state under %S/r1-hermes and readiness under
+# %t/r1-hermes. Hermes CLI currently keeps config, sessions, checkpoints, and
+# logs under ~/.hermes, so that subtree remains the only writable home path.
+BindPaths=%S/r1-hermes %t/r1-hermes -%h/.hermes
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+ProtectHostname=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=default.target

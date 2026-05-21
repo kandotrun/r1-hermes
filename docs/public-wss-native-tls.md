@@ -81,12 +81,13 @@ critical controls; do not run first-pairing without an allowlist on this public 
 Install `r1-hermes` for the service user, create the env file, and keep it private:
 
 ```bash
-python -m pip install --user '.[qr]'
-mkdir -p ~/.config/systemd/user ~/.config/r1-hermes
-cp packaging/systemd/r1-hermes.service ~/.config/systemd/user/r1-hermes.service
-cp packaging/systemd/r1-hermes.env.example ~/.config/r1-hermes/r1-hermes.env
-chmod 600 ~/.config/r1-hermes/r1-hermes.env
+python -m pip install --user './r1_hermes-<version>-py3-none-any.whl[qr]'
+r1-hermes install-systemd-user
 ```
+
+For a trusted source checkout, install editable with `python -m pip install --user -e '.[qr]'` and
+run the same installer helper. The manual `packaging/systemd/` paths are source-tree paths for
+inspection and are not required for release-artifact installs.
 
 Generate the gateway token in a private terminal and place it only in the env file. Avoid shell
 history and screen sharing. Do not paste the generated value into GitHub, chat, or service unit
