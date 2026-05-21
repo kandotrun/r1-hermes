@@ -78,24 +78,24 @@ jobs:
           "$wheel_qr_venv/bin/python" -m pip install --upgrade pip
           "$wheel_qr_venv/bin/python" -m pip install "${wheel_artifacts[0]}[qr]"
           "$wheel_qr_venv/bin/python" -m pip check
-          dummy_qr_token="dummy-ci-qr-token-do-not-use"
+          qr_smoke_token="$("$wheel_qr_venv/bin/python" -c 'import secrets; print(secrets.token_urlsafe(32))')"
           qr_output="$RUNNER_TEMP/r1-hermes-wheel-qr.png"
           qr_log="$RUNNER_TEMP/r1-hermes-wheel-qr.log"
           rm -f "$qr_output" "$qr_log"
           set +e
-          "$wheel_qr_venv/bin/r1-hermes" qr --host 127.0.0.1 --port 18789 --protocol ws --token "$dummy_qr_token" --output "$qr_output" >"$qr_log" 2>&1
+          "$wheel_qr_venv/bin/r1-hermes" qr --host 127.0.0.1 --port 18789 --protocol ws --token "$qr_smoke_token" --output "$qr_output" >"$qr_log" 2>&1
           qr_exit=$?
           set -e
-          "$wheel_qr_venv/bin/python" - "$qr_output" "$qr_log" "$dummy_qr_token" "$qr_exit" <<'PY'
+          "$wheel_qr_venv/bin/python" - "$qr_output" "$qr_log" "$qr_smoke_token" "$qr_exit" <<'PY'
           import sys
           from pathlib import Path
 
           qr_output = Path(sys.argv[1])
           qr_log = Path(sys.argv[2])
-          dummy_qr_token = sys.argv[3]
+          qr_smoke_token = sys.argv[3]
           qr_exit = int(sys.argv[4])
           output = qr_log.read_text(encoding="utf-8") if qr_log.exists() else ""
-          if any(value in output for value in (dummy_qr_token, '"token"', "clawdbot-gateway")):
+          if any(value in output for value in (qr_smoke_token, '"token"', "clawdbot-gateway")):
               raise SystemExit("QR smoke printed secret payload material")
           if qr_exit != 0:
               raise SystemExit(f"QR smoke command failed with safe output:\n{output}")
@@ -123,24 +123,24 @@ jobs:
           "$sdist_qr_venv/bin/python" -m pip install --upgrade pip
           "$sdist_qr_venv/bin/python" -m pip install "${sdist_artifacts[0]}[qr]"
           "$sdist_qr_venv/bin/python" -m pip check
-          dummy_qr_token="dummy-ci-qr-token-do-not-use"
+          qr_smoke_token="$("$sdist_qr_venv/bin/python" -c 'import secrets; print(secrets.token_urlsafe(32))')"
           qr_output="$RUNNER_TEMP/r1-hermes-sdist-qr.png"
           qr_log="$RUNNER_TEMP/r1-hermes-sdist-qr.log"
           rm -f "$qr_output" "$qr_log"
           set +e
-          "$sdist_qr_venv/bin/r1-hermes" qr --host 127.0.0.1 --port 18789 --protocol ws --token "$dummy_qr_token" --output "$qr_output" >"$qr_log" 2>&1
+          "$sdist_qr_venv/bin/r1-hermes" qr --host 127.0.0.1 --port 18789 --protocol ws --token "$qr_smoke_token" --output "$qr_output" >"$qr_log" 2>&1
           qr_exit=$?
           set -e
-          "$sdist_qr_venv/bin/python" - "$qr_output" "$qr_log" "$dummy_qr_token" "$qr_exit" <<'PY'
+          "$sdist_qr_venv/bin/python" - "$qr_output" "$qr_log" "$qr_smoke_token" "$qr_exit" <<'PY'
           import sys
           from pathlib import Path
 
           qr_output = Path(sys.argv[1])
           qr_log = Path(sys.argv[2])
-          dummy_qr_token = sys.argv[3]
+          qr_smoke_token = sys.argv[3]
           qr_exit = int(sys.argv[4])
           output = qr_log.read_text(encoding="utf-8") if qr_log.exists() else ""
-          if any(value in output for value in (dummy_qr_token, '"token"', "clawdbot-gateway")):
+          if any(value in output for value in (qr_smoke_token, '"token"', "clawdbot-gateway")):
               raise SystemExit("QR smoke printed secret payload material")
           if qr_exit != 0:
               raise SystemExit(f"QR smoke command failed with safe output:\n{output}")

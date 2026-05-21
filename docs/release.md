@@ -55,16 +55,18 @@ python -m build --sdist --wheel
 python -m pip check
 r1-hermes --help
 pip install "${wheel_artifacts[0]}[qr]"
-r1-hermes qr --host 127.0.0.1 --port 18789 --protocol ws --token "$dummy_qr_token" --output "$qr_output"
+qr_smoke_token="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+r1-hermes qr --host 127.0.0.1 --port 18789 --protocol ws --token "$qr_smoke_token" --output "$qr_output"
 pip install "${sdist_artifacts[0]}[qr]"
-r1-hermes qr --host 127.0.0.1 --port 18789 --protocol ws --token "$dummy_qr_token" --output "$qr_output"
+qr_smoke_token="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+r1-hermes qr --host 127.0.0.1 --port 18789 --protocol ws --token "$qr_smoke_token" --output "$qr_output"
 ```
 
 The final `python -m pip check`, `r1-hermes --help`, and QR checks are run from fresh temporary
-wheel and sdist virtual environments, not from the editable checkout. The QR smoke uses only an
-obvious dummy token, captures stdout/stderr, verifies the file starts with the PNG signature, and
-fails if the dummy token, `"token"`, or `clawdbot-gateway` payload marker appears in command
-output. Do not add `--print-payload` to this release gate.
+wheel and sdist virtual environments, not from the editable checkout. The QR smoke generates a
+fresh token inside the temporary environment, captures stdout/stderr, verifies the file starts with
+the PNG signature, and fails if that token, `"token"`, or `clawdbot-gateway` payload marker appears
+in command output. Do not add `--print-payload` to this release gate.
 
 Expected public artifacts:
 

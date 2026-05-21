@@ -60,7 +60,9 @@ QR_EXTRA_SDIST_INSTALL = 'pip install "${sdist_artifacts[0]}[qr]"'
 QR_SMOKE_COMMAND_PARTS = (
     "qr --host 127.0.0.1 --port 18789 --protocol ws",
     "--output \"$qr_output\"",
-    "dummy_qr_token=\"dummy-ci-qr-token-do-not-use\"",
+    'qr_smoke_token="$("$wheel_qr_venv/bin/python" -c',
+    'qr_smoke_token="$("$sdist_qr_venv/bin/python" -c',
+    "secrets.token_urlsafe(32)",
     'startswith(b"\\x89PNG\\r\\n\\x1a\\n")',
     "QR smoke printed secret payload material",
 )

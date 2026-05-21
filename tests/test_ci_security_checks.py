@@ -38,7 +38,9 @@ def test_ci_runs_installed_artifact_qr_extra_smoke_safely() -> None:
         'pip install "${wheel_artifacts[0]}[qr]"',
         'pip install "${sdist_artifacts[0]}[qr]"',
         "qr --host 127.0.0.1 --port 18789 --protocol ws",
-        "dummy_qr_token=\"dummy-ci-qr-token-do-not-use\"",
+        'qr_smoke_token="$("$wheel_qr_venv/bin/python" -c',
+        'qr_smoke_token="$("$sdist_qr_venv/bin/python" -c',
+        "secrets.token_urlsafe(32)",
         'startswith(b"\\x89PNG\\r\\n\\x1a\\n")',
         "QR smoke printed secret payload material",
     ):
