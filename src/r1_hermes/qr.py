@@ -50,7 +50,7 @@ def write_qr_png(payload: str, output_path: Path, *, overwrite: bool = False) ->
         fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, OWNER_READ_WRITE)
         try:
             with os.fdopen(fd, "wb") as handle:
-                img.save(handle)
+                img.save(handle, format="PNG")
             tmp_path.chmod(OWNER_READ_WRITE)
             tmp_path.replace(output_path)
         except Exception:
@@ -59,7 +59,7 @@ def write_qr_png(payload: str, output_path: Path, *, overwrite: bool = False) ->
     else:
         fd = os.open(output_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, OWNER_READ_WRITE)
         with os.fdopen(fd, "wb") as handle:
-            img.save(handle)
+            img.save(handle, format="PNG")
 
     output_path.chmod(OWNER_READ_WRITE)
     return output_path
