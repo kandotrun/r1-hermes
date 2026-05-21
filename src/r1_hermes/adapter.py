@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import binascii
 import copy
+import errno
+import fcntl
 import hashlib
 import hmac
 import ipaddress
@@ -16,6 +18,7 @@ import stat
 import time
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -45,6 +48,7 @@ DEFAULT_PORT = 18789
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_GLOBAL_CONCURRENCY = 2
 STATE_FILE = "devices.json"
+STATE_LOCK_FILE = f"{STATE_FILE}.lock"
 STATE_DIGEST_KEY_FILE = "device-token-hmac.key"
 TOKEN_BYTES = 32
 DIGEST_PREFIX = "hmac-sha256:v1:"
@@ -359,13 +363,41 @@ class DeviceState:
         self.state_dir = state_dir
         self.device_token_max_age_seconds = max(0, int(device_token_max_age_seconds))
         self.device_token_idle_timeout_seconds = max(0, int(device_token_idle_timeout_seconds))
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.state_dir, stat.S_IRWXU)
+        self._prepare_state_dir()
         self.path = self.state_dir / STATE_FILE
+        self.lock_path = self.state_dir / STATE_LOCK_FILE
         self.key_path = self.state_dir / STATE_DIGEST_KEY_FILE
-        self._digest_key = self._load_or_create_digest_key()
         self.devices: dict[str, DeviceRecord] = {}
         self.load()
+        self._digest_key = self._load_or_create_digest_key()
+
+    @classmethod
+    def read_device_ids(cls, state_dir: Path) -> list[str]:
+        if state_dir.is_symlink():
+            raise ValueError("device state directory must not be a symlink")
+        if not state_dir.exists():
+            return []
+        if not state_dir.is_dir():
+            raise ValueError("device state path must be a directory")
+        path = state_dir / STATE_FILE
+        lock_path = state_dir / STATE_LOCK_FILE
+        with _locked_device_state_file(lock_path):
+            try:
+                data = _read_json_regular_file(path, description="devices.json")
+            except FileNotFoundError:
+                return []
+        devices = data.get("devices", {}) if isinstance(data, dict) else {}
+        if not isinstance(devices, dict):
+            return []
+        return sorted(str(device_id) for device_id in devices)
+
+    def _prepare_state_dir(self) -> None:
+        if self.state_dir.is_symlink():
+            raise ValueError("device state directory must not be a symlink")
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        if not self.state_dir.is_dir():
+            raise ValueError("device state path must be a directory")
+        os.chmod(self.state_dir, stat.S_IRWXU)
 
     def _load_or_create_digest_key(self) -> bytes:
         if self.key_path.is_symlink():
@@ -395,84 +427,71 @@ class DeviceState:
         return key
 
     def load(self) -> None:
-        if not self.path.exists():
-            self.devices = {}
-            return
-        data = json.loads(self.path.read_text())
-        loaded_at_ms = _now_ms()
-        migrated_timestamps = False
-        devices = {}
-        for device_id, record in data.get("devices", {}).items():
-            if not _has_valid_timestamp(record, "created_at_ms") or not _has_valid_timestamp(
-                record,
-                "last_seen_at_ms",
-            ):
-                migrated_timestamps = True
-            devices[device_id] = DeviceRecord.from_json(
-                record,
-                missing_timestamp_ms=loaded_at_ms,
-            )
-        self.devices = devices
-        if migrated_timestamps:
-            self.save()
+        with _locked_device_state_file(self.lock_path):
+            devices, migrated_timestamps = self._load_unlocked()
+            self.devices = devices
+            if migrated_timestamps:
+                self._save_unlocked(devices)
 
     def save(self) -> None:
-        payload = {"devices": {k: v.to_json() for k, v in sorted(self.devices.items())}}
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
-        os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
-        tmp.replace(self.path)
-        os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
+        with _locked_device_state_file(self.lock_path):
+            self._save_unlocked(self.devices)
 
     def issue_device_token(self, device_id: str, *, display_name: str = "Rabbit R1") -> str:
-        self.load()
         now = _now_ms()
         token = secrets.token_urlsafe(TOKEN_BYTES)
-        self.devices[device_id] = DeviceRecord(
-            device_id=device_id,
-            token_hash=_hash_token(token, self._digest_key),
-            display_name=display_name or "Rabbit R1",
-            created_at_ms=now,
-            last_seen_at_ms=now,
-        )
-        self.save()
+        with _locked_device_state_file(self.lock_path):
+            devices, _migrated_timestamps = self._load_unlocked()
+            devices[device_id] = DeviceRecord(
+                device_id=device_id,
+                token_hash=_hash_token(token, self._digest_key),
+                display_name=display_name or "Rabbit R1",
+                created_at_ms=now,
+                last_seen_at_ms=now,
+            )
+            self._save_unlocked(devices)
+            self.devices = devices
         return token
 
     def verify_device_token(self, device_id: str, token: str) -> bool:
         return self.verify_device_token_detailed(device_id, token).ok
 
     def verify_device_token_detailed(self, device_id: str, token: str) -> DeviceTokenVerification:
-        self.load()
-        record = self.devices.get(device_id)
-        if not record:
-            return DeviceTokenVerification(False, reason="unknown_device")
-        now = _now_ms()
-        token_hash = _hash_token(token, self._digest_key)
-        ok = hmac.compare_digest(record.token_hash, token_hash)
-        needs_upgrade = False
-        if not ok and _is_legacy_token_hash(record.token_hash):
-            ok = hmac.compare_digest(record.token_hash, _legacy_hash_token(token))
-            needs_upgrade = ok
-        if not ok:
-            return DeviceTokenVerification(False, reason="token_mismatch")
-        if self.is_expired(record, now_ms=now):
-            return DeviceTokenVerification(False, reason="device_token_expired")
-        if needs_upgrade:
-            record.token_hash = token_hash
-        record.last_seen_at_ms = now
-        self.save()
-        return DeviceTokenVerification(True, rotated_digest=needs_upgrade)
+        with _locked_device_state_file(self.lock_path):
+            devices, _migrated_timestamps = self._load_unlocked()
+            self.devices = devices
+            record = devices.get(device_id)
+            if not record:
+                return DeviceTokenVerification(False, reason="unknown_device")
+            now = _now_ms()
+            token_hash = _hash_token(token, self._digest_key)
+            ok = hmac.compare_digest(record.token_hash, token_hash)
+            needs_upgrade = False
+            if not ok and _is_legacy_token_hash(record.token_hash):
+                ok = hmac.compare_digest(record.token_hash, _legacy_hash_token(token))
+                needs_upgrade = ok
+            if not ok:
+                return DeviceTokenVerification(False, reason="token_mismatch")
+            if self.is_expired(record, now_ms=now):
+                return DeviceTokenVerification(False, reason="device_token_expired")
+            if needs_upgrade:
+                record.token_hash = token_hash
+            record.last_seen_at_ms = now
+            self._save_unlocked(devices)
+            return DeviceTokenVerification(True, rotated_digest=needs_upgrade)
 
     def device_ids(self) -> list[str]:
         self.load()
         return sorted(self.devices)
 
     def revoke(self, device_id: str) -> bool:
-        self.load()
-        existed = device_id in self.devices
-        self.devices.pop(device_id, None)
-        if existed:
-            self.save()
+        with _locked_device_state_file(self.lock_path):
+            devices, _migrated_timestamps = self._load_unlocked()
+            existed = device_id in devices
+            devices.pop(device_id, None)
+            if existed:
+                self._save_unlocked(devices)
+            self.devices = devices
         audit_log(
             "info",
             "device.revoke",
@@ -482,13 +501,16 @@ class DeviceState:
         return existed
 
     def revoke_all(self) -> list[str]:
-        self.load()
-        revoked = sorted(self.devices)
-        if not revoked:
-            audit_log("info", "device.revoke_all", revoked=0, device_id_hashes=[])
-            return []
-        self.devices.clear()
-        self.save()
+        with _locked_device_state_file(self.lock_path):
+            devices, _migrated_timestamps = self._load_unlocked()
+            revoked = sorted(devices)
+            if not revoked:
+                self.devices = devices
+                audit_log("info", "device.revoke_all", revoked=0, device_id_hashes=[])
+                return []
+            devices.clear()
+            self._save_unlocked(devices)
+            self.devices = devices
         audit_log(
             "info",
             "device.revoke_all",
@@ -498,19 +520,50 @@ class DeviceState:
         return revoked
 
     def prune_expired(self) -> int:
-        self.load()
-        now = _now_ms()
-        expired = [
-            device_id
-            for device_id, record in self.devices.items()
-            if self.is_expired(record, now_ms=now)
-        ]
-        for device_id in expired:
-            self.devices.pop(device_id, None)
-        if expired:
-            self.save()
+        with _locked_device_state_file(self.lock_path):
+            devices, _migrated_timestamps = self._load_unlocked()
+            now = _now_ms()
+            expired = [
+                device_id
+                for device_id, record in devices.items()
+                if self.is_expired(record, now_ms=now)
+            ]
+            for device_id in expired:
+                devices.pop(device_id, None)
+            if expired:
+                self._save_unlocked(devices)
+            self.devices = devices
         audit_log("info", "device.cleanup", removed=len(expired))
         return len(expired)
+
+    def _load_unlocked(self) -> tuple[dict[str, DeviceRecord], bool]:
+        try:
+            data = _read_json_regular_file(self.path, description="devices.json")
+        except FileNotFoundError:
+            return {}, False
+        loaded_at_ms = _now_ms()
+        migrated_timestamps = False
+        devices = {}
+        raw_devices = data.get("devices", {}) if isinstance(data, dict) else {}
+        if not isinstance(raw_devices, dict):
+            raw_devices = {}
+        for device_id, record in raw_devices.items():
+            if not isinstance(record, dict):
+                continue
+            if not _has_valid_timestamp(record, "created_at_ms") or not _has_valid_timestamp(
+                record,
+                "last_seen_at_ms",
+            ):
+                migrated_timestamps = True
+            devices[str(device_id)] = DeviceRecord.from_json(
+                record,
+                missing_timestamp_ms=loaded_at_ms,
+            )
+        return devices, migrated_timestamps
+
+    def _save_unlocked(self, devices: dict[str, DeviceRecord]) -> None:
+        payload = {"devices": {k: v.to_json() for k, v in sorted(devices.items())}}
+        _write_json_regular_file_atomic(self.path, payload, description="devices.json")
 
     def is_expired(self, record: DeviceRecord, *, now_ms: int | None = None) -> bool:
         now_ms = _now_ms() if now_ms is None else now_ms
@@ -1531,6 +1584,159 @@ def _is_legacy_token_hash(token_hash: str) -> bool:
     if len(token_hash) != 64:
         return False
     return all(char in "0123456789abcdefABCDEF" for char in token_hash)
+
+
+@contextmanager
+def _locked_device_state_file(lock_path: Path):
+    fd = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+        stat.S_IRUSR | stat.S_IWUSR,
+    )
+    try:
+        _validate_open_regular_file(fd, description="devices.json lock")
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(fd, "r+") as handle:
+            fd = -1
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ValueError("devices.json lock must not be a symlink") from exc
+        raise
+    finally:
+        if fd != -1:  # pragma: no cover - defensive cleanup
+            os.close(fd)
+
+
+def _read_json_regular_file(path: Path, *, description: str) -> dict[str, Any]:
+    fd = _open_existing_regular_file(path, description=description)
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            data = json.load(handle)
+    finally:
+        if fd != -1:  # pragma: no cover - defensive cleanup
+            os.close(fd)
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def _write_json_regular_file_atomic(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    description: str,
+) -> None:
+    _validate_optional_regular_secret_file(path, description=description)
+    tmp = _create_state_temp_file(path)
+    try:
+        with os.fdopen(tmp.fd, "w", encoding="utf-8") as handle:
+            tmp.fd = -1
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp.path, path)
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        _fsync_parent_dir(path)
+    except Exception:
+        tmp.cleanup()
+        raise
+
+
+@dataclass
+class _StateTempFile:
+    path: Path
+    fd: int
+
+    def cleanup(self) -> None:
+        if self.fd != -1:
+            os.close(self.fd)
+            self.fd = -1
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _create_state_temp_file(path: Path) -> _StateTempFile:
+    for _attempt in range(100):
+        tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(tmp, flags, stat.S_IRUSR | stat.S_IWUSR)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise ValueError("devices.json temp file must not be a symlink") from exc
+            raise
+        try:
+            _validate_open_regular_file(fd, description="devices.json temp file")
+            os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+        except Exception:
+            os.close(fd)
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        return _StateTempFile(path=tmp, fd=fd)
+    raise ValueError("could not create a unique devices.json temp file")
+
+
+def _open_existing_regular_file(path: Path, *, description: str) -> int:
+    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ValueError(f"{description} must not be a symlink") from exc
+        raise
+    try:
+        _validate_open_regular_file(fd, description=description)
+        mode = stat.S_IMODE(os.fstat(fd).st_mode)
+        if mode & 0o077:
+            formatted = _format_octal_mode(mode)
+            raise ValueError(f"{description} mode {formatted} is unsafe; expected 0600")
+    except Exception:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _validate_optional_regular_secret_file(path: Path, *, description: str) -> None:
+    try:
+        fd = _open_existing_regular_file(path, description=description)
+    except FileNotFoundError:
+        return
+    else:
+        os.close(fd)
+
+
+def _validate_open_regular_file(fd: int, *, description: str) -> None:
+    file_stat = os.fstat(fd)
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise ValueError(f"{description} must be a regular file")
+
+
+def _format_octal_mode(mode: int) -> str:
+    return f"0{mode & 0o777:o}"
+
+
+def _fsync_parent_dir(path: Path) -> None:
+    fd = os.open(path.parent, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _validate_config(config: R1HermesConfig) -> None:
