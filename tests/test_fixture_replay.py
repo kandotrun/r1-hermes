@@ -19,9 +19,16 @@ class ReplaySink:
     def __init__(self):
         self.messages = []
 
-    async def __call__(self, text: str, *, device_id: str, session_key: str) -> str:
-        self.messages.append({"text": text, "device_id": device_id, "session_key": session_key})
-        return f"fixture echo: {device_id}/{session_key}: {text}"
+    async def __call__(self, text: str, *, device_id: str, session_key: str, attachments=()) -> str:
+        self.messages.append(
+            {
+                "text": text,
+                "device_id": device_id,
+                "session_key": session_key,
+                "attachments": attachments,
+            }
+        )
+        return f"fixture echo: {device_id}/{session_key}: {text} ({len(attachments)} attachments)"
 
 
 @pytest_asyncio.fixture
@@ -112,12 +119,13 @@ async def test_sanitized_fixture_flows_replay_without_secret_leakage(replay_gate
 
     assert result.response_text == (
         f"fixture echo: {flow.expected_device_id}/{flow.expected_session_key}: "
-        f"{flow.expected_message}"
+        f"{flow.expected_message} (0 attachments)"
     )
     assert sink.messages[-1] == {
         "text": flow.expected_message,
         "device_id": flow.expected_device_id,
         "session_key": flow.expected_session_key,
+        "attachments": (),
     }
     assert result.run_id == flow.expected_run_id
     assert DUMMY_GATEWAY_TOKEN not in repr(result)
@@ -138,12 +146,7 @@ async def test_sanitized_fixture_flows_replay_without_secret_leakage(replay_gate
             "chat_send_mixed_text_audio_content.json",
             "DUMMY_BINARY_DATA_OMITTED",
             "please describe this audio",
-        ),
-        (
-            "chat_send_media_only_image_content.json",
-            "DUMMY_BINARY_DATA_OMITTED",
-            None,
-        ),
+        )
     ],
 )
 async def test_media_fixture_flows_return_unsupported_media_without_secret_leakage(
@@ -179,6 +182,47 @@ async def test_media_fixture_flows_return_unsupported_media_without_secret_leaka
     assert dummy_media not in result.serialized_frames
     if text_prompt is not None:
         assert text_prompt not in result.serialized_chat_frames
+    assert TEST_GATEWAY_TOKEN not in result.serialized_frames
+    assert DUMMY_GATEWAY_TOKEN not in result.serialized_frames
+    assert DUMMY_DEVICE_TOKEN not in result.serialized_frames
+    assert result.device_token not in result.serialized_frames
+
+
+@pytest.mark.asyncio
+async def test_camera_image_fixture_flow_replays_as_attachment_without_secret_leakage(
+    replay_gateway,
+):
+    url, sink = replay_gateway
+
+    result = await replay_fixture_flow(
+        url=url,
+        fixture_dir=FIXTURE_DIR,
+        flow=FixtureReplayFlow(
+            connect_fixture="connect_official_helper.json",
+            chat_fixture="chat_send_media_only_image_content.json",
+            expected_device_id="r1-official-helper",
+            expected_message="",
+            expected_session_key="media-main",
+            expected_run_id="media-only-run-001",
+        ),
+        gateway_token=TEST_GATEWAY_TOKEN,
+    )
+
+    assert result.response_text == "fixture echo: r1-official-helper/media-main:  (1 attachments)"
+    assert result.run_id == "media-only-run-001"
+    assert len(sink.messages) == 1
+    message = sink.messages[0]
+    assert message["text"] == ""
+    assert message["device_id"] == "r1-official-helper"
+    assert message["session_key"] == "media-main"
+    assert len(message["attachments"]) == 1
+    attachment = message["attachments"][0]
+    assert attachment.mime_type == "image/jpeg"
+    assert attachment.size_bytes == len(b"r1-image")
+    assert attachment.content_hash.startswith("sha256:")
+    assert "cjEtaW1hZ2U=" not in repr(result)
+    assert "cjEtaW1hZ2U=" not in result.serialized_frames
+    assert "data:image" not in result.serialized_frames
     assert TEST_GATEWAY_TOKEN not in result.serialized_frames
     assert DUMMY_GATEWAY_TOKEN not in result.serialized_frames
     assert DUMMY_DEVICE_TOKEN not in result.serialized_frames

@@ -12,7 +12,9 @@ SECRET_REPLACEMENTS = {
     "DUMMY_GATEWAY_TOKEN_DO_NOT_USE": "[REDACTED]",
     "DUMMY_DEVICE_TOKEN_DO_NOT_USE": "[REDACTED]",
     "DUMMY_BINARY_DATA_OMITTED": "[REDACTED_MEDIA]",
+    "cjEtaW1hZ2U=": "[REDACTED_MEDIA]",
 }
+MEDIA_DATA_KEYS = {"data", "b64_json", "base64", "bytes", "blob"}
 
 
 @dataclass(frozen=True)
@@ -188,6 +190,8 @@ def _redact_secrets(value: Any) -> Any:
         for key, child in value.items():
             if key in {"token", "authToken", "gatewayToken", "deviceToken", "bearerToken"}:
                 redacted[key] = "[REDACTED]"
+            elif key in MEDIA_DATA_KEYS:
+                redacted[key] = "[REDACTED_MEDIA]"
             else:
                 redacted[key] = _redact_secrets(child)
         return redacted

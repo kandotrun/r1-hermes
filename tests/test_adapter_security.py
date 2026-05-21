@@ -26,6 +26,29 @@ class FakeHermesSink:
         return f"echo: {text}"
 
 
+class AttachmentAwareHermesSink:
+    def __init__(self):
+        self.calls = []
+
+    async def __call__(
+        self,
+        text: str,
+        *,
+        device_id: str,
+        session_key: str,
+        attachments=(),
+    ) -> str:
+        self.calls.append(
+            {
+                "text": text,
+                "device_id": device_id,
+                "session_key": session_key,
+                "attachments": attachments,
+            }
+        )
+        return f"vision attachments: {len(attachments)}"
+
+
 class RaisingHermesSink:
     def __init__(self, exc: Exception):
         self.exc = exc
@@ -900,7 +923,6 @@ async def test_chat_run_lifecycle_audit_logs_do_not_include_full_message_body(
     ("fixture_name", "dummy_media"),
     [
         ("chat_send_mixed_text_audio_content.json", "DUMMY_BINARY_DATA_OMITTED"),
-        ("chat_send_media_only_image_content.json", "DUMMY_BINARY_DATA_OMITTED"),
     ],
 )
 async def test_unsupported_media_chat_send_returns_safe_error_without_agent_run_or_leakage(
@@ -959,6 +981,93 @@ async def test_unsupported_media_chat_send_returns_safe_error_without_agent_run_
     finally:
         await ws.close()
         await session.close()
+
+
+@pytest.mark.asyncio
+async def test_camera_image_chat_send_runs_attachment_aware_handler_without_media_log_leakage(
+    unused_tcp_port,
+    tmp_path,
+    caplog,
+):
+    sink = AttachmentAwareHermesSink()
+    adapter = R1HermesAdapter(
+        R1HermesConfig(
+            host="127.0.0.1",
+            port=unused_tcp_port,
+            gateway_token="gateway-token-for-tests",
+            state_dir=tmp_path,
+            max_message_chars=128,
+        ),
+        message_handler=sink,
+    )
+    caplog.set_level(logging.INFO, logger="r1_hermes.audit")
+    await adapter.start()
+    session, ws = await ws_connect(f"http://127.0.0.1:{unused_tcp_port}")
+    try:
+        await ws.send_json(
+            {
+                "type": "req",
+                "id": "connect-camera-image",
+                "method": "connect",
+                "params": {
+                    "auth": {"token": "gateway-token-for-tests"},
+                    "device": {"id": "r1-camera-image"},
+                },
+            }
+        )
+        hello = await ws.receive_json()
+        device_token = hello["payload"]["auth"]["deviceToken"]
+
+        frame = load_fixture("chat_send_media_only_image_content.json")
+        await ws.send_json(frame)
+        ack = await ws.receive_json()
+        started = await ws.receive_json()
+        final = await ws.receive_json()
+        serialized_response = json.dumps([ack, started, final], sort_keys=True)
+        logs = serialized_audit_logs(caplog)
+
+        assert ack["ok"] is True
+        assert final["payload"]["state"] == "final"
+        assert final["payload"]["message"]["content"][0]["text"] == "vision attachments: 1"
+        assert len(sink.calls) == 1
+        call = sink.calls[0]
+        assert call["text"] == ""
+        assert call["device_id"] == "r1-camera-image"
+        assert call["session_key"] == "media-main"
+        assert len(call["attachments"]) == 1
+        attachment = call["attachments"][0]
+        assert attachment.mime_type == "image/jpeg"
+        assert attachment.source_field == "content.data"
+        assert attachment.filename == "r1-camera.jpg"
+        assert attachment.extension == "jpg"
+        assert attachment.size_bytes == len(b"r1-image")
+        assert attachment.content_hash.startswith("sha256:")
+        assert "cjEtaW1hZ2U=" not in repr(attachment)
+        assert "data:image" not in repr(attachment)
+
+        started_event = next(
+            event for event in audit_events(caplog) if event["event"] == "chat.run_started"
+        )
+        final_event = next(
+            event for event in audit_events(caplog) if event["event"] == "chat.run_final"
+        )
+        assert started_event["attachment_count"] == 1
+        assert started_event["attachment_sizes"] == [len(b"r1-image")]
+        assert started_event["attachment_mime_types"] == ["image/jpeg"]
+        assert started_event["attachment_hashes"] == [attachment.content_hash]
+        assert final_event["attachment_count"] == 1
+        assert "cjEtaW1hZ2U=" not in serialized_response
+        assert "cjEtaW1hZ2U=" not in logs
+        assert "data:image" not in serialized_response
+        assert "data:image" not in logs
+        assert "DUMMY_DEVICE_TOKEN_DO_NOT_USE" not in serialized_response
+        assert "DUMMY_DEVICE_TOKEN_DO_NOT_USE" not in logs
+        assert device_token not in serialized_response
+        assert device_token not in logs
+    finally:
+        await ws.close()
+        await session.close()
+        await adapter.stop()
 
 
 @pytest.mark.asyncio

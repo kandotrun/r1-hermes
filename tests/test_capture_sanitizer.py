@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from r1_hermes.capture_sanitizer import (
+    DUMMY_BINARY_DATA,
     DUMMY_DEVICE_TOKEN,
     DUMMY_GATEWAY_TOKEN,
     SANITIZED_ASSISTANT_TEXT,
@@ -126,6 +127,29 @@ def test_validate_sanitized_capture_accepts_unsupported_media_fixture_shape() ->
                         },
                     ]
                 },
+                "sessionKey": "media-main",
+                "requestId": "media-run-001",
+                "auth": {"deviceToken": DUMMY_DEVICE_TOKEN},
+            },
+        }
+    )
+
+
+def test_validate_sanitized_capture_accepts_image_attachment_fixture_shape() -> None:
+    validate_sanitized_capture(
+        {
+            "type": "req",
+            "id": "image-frame-001",
+            "method": "chat.send",
+            "params": {
+                "content": [
+                    {
+                        "type": "input_image",
+                        "mediaType": "image/jpeg",
+                        "filename": "r1-camera.jpg",
+                        "data": f"data:image/jpeg;base64,{DUMMY_BINARY_DATA}",
+                    }
+                ],
                 "sessionKey": "media-main",
                 "requestId": "media-run-001",
                 "auth": {"deviceToken": DUMMY_DEVICE_TOKEN},
