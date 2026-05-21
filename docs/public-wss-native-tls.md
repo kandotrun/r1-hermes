@@ -182,9 +182,10 @@ value only in the private env file. For multiple intended devices, use comma, sp
 newline-separated values in `R1_HERMES_ALLOWED_DEVICE_IDS`.
 
 If the intended `device.id` is not known yet, do not learn it on public native WSS. Pair once on a
-private boundary such as Tailscale Serve or a concrete Tailscale IP, record the intended ID locally
-from `devices.json` or correlate the sanitized `device_id_hash` in local audit logs, revoke any
-unintended records, then restart public WSS with `R1_HERMES_ALLOWED_DEVICE_IDS` set.
+private first-pairing boundary such as Tailscale Serve or a concrete Tailscale IP, record the
+intended ID locally from `devices.json` or correlate the sanitized `device_id_hash` in local audit
+logs, revoke any unintended records, then restart public WSS with `R1_HERMES_ALLOWED_DEVICE_IDS`
+set for locked-down steady-state operation.
 
 Restart and verify the service:
 

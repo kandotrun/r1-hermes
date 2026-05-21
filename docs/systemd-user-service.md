@@ -88,7 +88,9 @@ When the intended R1 ID is known, set `R1_HERMES_ALLOWED_DEVICE_IDS` in the env 
 service operation. It accepts comma, space, or newline-separated IDs. If you must learn the ID from
 first pairing, leave the variable unset only on a private boundary, pair once, record the intended
 ID from local state, use sanitized audit logs only for correlation, then restart the service with
-the allowlist set.
+the allowlist set for locked-down steady-state operation. Never paste real Rabbit R1 device IDs
+into GitHub issues, pull requests, logs, docs, screenshots, or support tickets; use placeholders
+such as `<INTENDED_R1_DEVICE_ID>` in shared text.
 
 Leave `R1_HERMES_ALLOW_PUBLIC_BIND` unset for localhost and concrete IP binds. Setting it to `1`
 allows all-interface binds and should be treated as an explicit exposure acknowledgement, not
