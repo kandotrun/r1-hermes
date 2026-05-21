@@ -18,4 +18,4 @@ class ChatRunFailedError(ChatRunError):
 
 class ChatRunTimeoutError(ChatRunError):
     code = "CHAT_RUN_TIMEOUT"
-    safe_message = "chat run timed out"
+    safe_message = "run exceeded the R1 gateway timeout limit"

@@ -191,8 +191,14 @@ systemctl --user edit r1-hermes.service
 ```ini
 [Service]
 ExecStart=
-ExecStart=/absolute/path/to/r1-hermes hermes --host ${R1_HERMES_HOST} --port ${R1_HERMES_PORT} --state-dir %S/r1-hermes --ready-file %t/r1-hermes/ready --toolsets ${R1_HERMES_TOOLSETS} --timeout ${R1_HERMES_TIMEOUT} --global-concurrency ${R1_HERMES_GLOBAL_CONCURRENCY} --per-device-concurrency ${R1_HERMES_PER_DEVICE_CONCURRENCY}
+ExecStart=/absolute/path/to/r1-hermes hermes --host ${R1_HERMES_HOST} --port ${R1_HERMES_PORT} --state-dir %S/r1-hermes --ready-file %t/r1-hermes/ready --toolsets ${R1_HERMES_TOOLSETS} --timeout ${R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS} --heartbeat-interval ${R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS} --global-concurrency ${R1_HERMES_GLOBAL_CONCURRENCY} --per-device-concurrency ${R1_HERMES_PER_DEVICE_CONCURRENCY}
 ```
+
+Set `R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS` to the maximum number of seconds an authenticated R1
+`chat.send` may occupy the gateway; the legacy `R1_HERMES_TIMEOUT` name is still accepted by the
+CLI for older env files. Set `R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS` for the fixed `running`
+heartbeat cadence while Hermes is active. Heartbeats are deliberately generic and must not carry
+tool stderr, prompts, bearer tokens, QR payloads, or raw device IDs.
 
 ## Enable
 

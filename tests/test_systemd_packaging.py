@@ -38,6 +38,8 @@ def test_systemd_service_limits_writable_paths() -> None:
     assert "SystemCallFilter=~@privileged @resources" in service_text
     assert "--state-dir %S/r1-hermes" in service_text
     assert "--ready-file %t/r1-hermes/ready" in service_text
+    assert "--timeout ${R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS}" in service_text
+    assert "--heartbeat-interval ${R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS}" in service_text
 
 
 def test_env_example_keeps_localhost_default_and_token_placeholder() -> None:
@@ -47,6 +49,8 @@ def test_env_example_keeps_localhost_default_and_token_placeholder() -> None:
     assert "R1_HERMES_GATEWAY_TOKEN=replace-with-generated-token" in env_text
     assert "R1_HERMES_ALLOW_PUBLIC_BIND=1" in env_text
     assert "R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1" in env_text
+    assert "R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS=180" in env_text
+    assert "R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS=15" in env_text
     assert "# R1_HERMES_ALLOW_REMOTE_HEALTH=1" in env_text
     assert "# R1_HERMES_HEALTH_DIAGNOSTICS=1" in env_text
     assert WILDCARD_HOST not in env_text
@@ -69,6 +73,8 @@ def test_systemd_docs_cover_operations_and_health_checks() -> None:
         "R1_HERMES_ALLOW_REMOTE_HEALTH=1",
         "R1_HERMES_HEALTH_DIAGNOSTICS=1",
         "r1-hermes probe",
+        "R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS",
+        "R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS",
         "systemctl --user enable --now r1-hermes.service",
         "journalctl --user-unit r1-hermes.service",
         "## Write-path assumptions",

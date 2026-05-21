@@ -94,6 +94,15 @@ devices, increase only the global cap to the number of concurrent Hermes subproc
 comfortably run; keep the per-device cap low unless one device is intentionally allowed to occupy
 several slots. Requests over either cap receive `BUSY` before Hermes is invoked.
 
+Each authenticated R1 chat run has an explicit gateway timeout. The default is 180 seconds. Set it
+with `--timeout`, `R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS`, or the legacy service value
+`R1_HERMES_TIMEOUT`. The default Hermes CLI runner receives the same timeout, so a slow subprocess
+is killed at the gateway limit and the R1 receives `CHAT_RUN_TIMEOUT` with a generic message that
+the run exceeded the R1 gateway timeout limit. The gateway sends generic `running` heartbeat chat
+events every 15 seconds while Hermes is still active; tune that cadence with `--heartbeat-interval`
+or `R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS`. Heartbeats intentionally expose only run/session
+metadata and a fixed status string, never tool stderr, prompts, tokens, or QR payload material.
+
 The gateway rejects wildcard bind hosts such as `0.0.0.0`, `::`, and numeric aliases for all
 interfaces unless you explicitly acknowledge the exposure with `--allow-public-bind` or
 `R1_HERMES_ALLOW_PUBLIC_BIND=1`. Treat that opt-in as an exception for a reviewed private network
@@ -398,6 +407,8 @@ Useful event names include:
   payloads.
 - `rate_limited` and `busy_rejected` at `WARNING` before Hermes is invoked.
 - `chat.run_started`, `chat.run_final`, and `chat.run_error` for authenticated run lifecycle.
+- R1-visible heartbeat frames use `event: chat`, `state: running`, and `heartbeat: true`; they are
+  not audit logs and contain no prompt or tool output.
 - `hermes.subprocess_failed` and `hermes.subprocess_timeout` for Hermes CLI failures.
 - `device.revoke`, `device.revoke_all`, and `device.cleanup` for local device-state operations.
 

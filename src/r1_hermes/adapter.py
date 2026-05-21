@@ -15,6 +15,7 @@ import ssl
 import stat
 import time
 from collections import OrderedDict, defaultdict, deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,8 @@ DEFAULT_DEVICE_TOKEN_MAX_AGE_SECONDS = 90 * 24 * 60 * 60
 DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS = 30 * 24 * 60 * 60
 DEFAULT_IDEMPOTENCY_CACHE_MAX_ENTRIES = 256
 DEFAULT_IDEMPOTENCY_CACHE_TTL_SECONDS = 5 * 60
+DEFAULT_CHAT_RUN_TIMEOUT_SECONDS = 180.0
+DEFAULT_CHAT_HEARTBEAT_INTERVAL_SECONDS = 15.0
 
 
 @dataclass(frozen=True)
@@ -80,6 +83,8 @@ class R1HermesConfig:
     device_token_idle_timeout_seconds: int = DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS
     idempotency_cache_max_entries: int = DEFAULT_IDEMPOTENCY_CACHE_MAX_ENTRIES
     idempotency_cache_ttl_seconds: int = DEFAULT_IDEMPOTENCY_CACHE_TTL_SECONDS
+    chat_run_timeout_seconds: float = DEFAULT_CHAT_RUN_TIMEOUT_SECONDS
+    chat_heartbeat_interval_seconds: float = DEFAULT_CHAT_HEARTBEAT_INTERVAL_SECONDS
     allow_remote_health: bool = False
     health_diagnostics: bool = False
     tls_cert_file: Path | None = None
@@ -111,6 +116,8 @@ class R1HermesConfig:
         device_token_idle_timeout_seconds: int | None = None,
         idempotency_cache_max_entries: int | None = None,
         idempotency_cache_ttl_seconds: int | None = None,
+        chat_run_timeout_seconds: float | None = None,
+        chat_heartbeat_interval_seconds: float | None = None,
         allow_remote_health: bool | None = None,
         health_diagnostics: bool | None = None,
         tls_cert_file: Path | None = None,
@@ -208,6 +215,22 @@ class R1HermesConfig:
                 else os.environ.get(
                     "R1_HERMES_IDEMPOTENCY_CACHE_TTL_SECONDS",
                     str(DEFAULT_IDEMPOTENCY_CACHE_TTL_SECONDS),
+                )
+            ),
+            chat_run_timeout_seconds=float(
+                chat_run_timeout_seconds
+                if chat_run_timeout_seconds is not None
+                else os.environ.get(
+                    "R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS",
+                    os.environ.get("R1_HERMES_TIMEOUT", str(DEFAULT_CHAT_RUN_TIMEOUT_SECONDS)),
+                )
+            ),
+            chat_heartbeat_interval_seconds=float(
+                chat_heartbeat_interval_seconds
+                if chat_heartbeat_interval_seconds is not None
+                else os.environ.get(
+                    "R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS",
+                    str(DEFAULT_CHAT_HEARTBEAT_INTERVAL_SECONDS),
                 )
             ),
             allow_remote_health=(
@@ -1132,7 +1155,9 @@ class R1HermesAdapter:
         error: ChatRunError | None = None
         cancelled = False
         started_at = time.monotonic()
+        seq_ref = {"value": 1}
         completed_event: dict[str, Any]
+        heartbeat_task: asyncio.Task[None] | None = None
         try:
             await self._on_chat_session_active(ws, device_id=device_id, session_key=session_key)
             started_ack = {
@@ -1181,9 +1206,26 @@ class R1HermesAdapter:
                 run_id_hash=hash_identifier(run_id),
                 message_chars=len(message_text),
             )
+            heartbeat_task = asyncio.create_task(
+                _emit_chat_heartbeats(
+                    ws,
+                    run_id=run_id,
+                    session_key=session_key,
+                    interval_seconds=self.config.chat_heartbeat_interval_seconds,
+                    next_seq=lambda: _next_chat_seq(seq_ref),
+                    device_id=device_id,
+                    started_at=started_at,
+                ),
+                name="r1-hermes-chat-heartbeat",
+            )
             try:
-                response = await self.message_handler(
-                    message_text, device_id=device_id, session_key=session_key
+                response = await asyncio.wait_for(
+                    self.message_handler(
+                        message_text,
+                        device_id=device_id,
+                        session_key=session_key,
+                    ),
+                    timeout=self.config.chat_run_timeout_seconds,
                 )
             except asyncio.CancelledError:
                 if idempotency_key:
@@ -1197,11 +1239,14 @@ class R1HermesAdapter:
                 raise
             except ChatRunError as exc:
                 error = exc
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 error = ChatRunTimeoutError()
             except Exception:  # pragma: no cover - defensive boundary
                 error = ChatRunError()
         finally:
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                await asyncio.gather(heartbeat_task, return_exceptions=True)
             async with self._inflight_lock:
                 self._inflight_by_device[device_id] -= 1
                 if self._inflight_by_device[device_id] <= 0:
@@ -1233,7 +1278,9 @@ class R1HermesAdapter:
             return
 
         if error is not None:
-            completed_event = _chat_error_event(run_id, session_key, error)
+            completed_event = _chat_error_event(
+                run_id, session_key, error, seq=_next_chat_seq(seq_ref)
+            )
             audit_log(
                 "error",
                 "chat.run_error",
@@ -1272,7 +1319,9 @@ class R1HermesAdapter:
                 )
             return
 
-        completed_event = _chat_final_event(run_id, session_key, response)
+        completed_event = _chat_final_event(
+            run_id, session_key, response, seq=_next_chat_seq(seq_ref)
+        )
         if not await _send_json_if_open(ws, completed_event):
             audit_log(
                 "info",
@@ -1382,6 +1431,10 @@ def _validate_config(config: R1HermesConfig) -> None:
         raise ValueError("rate_limit_window_seconds must be at least 1")
     if config.unauthenticated_timeout_seconds < 1:
         raise ValueError("unauthenticated_timeout_seconds must be at least 1")
+    if config.chat_run_timeout_seconds <= 0:
+        raise ValueError("chat_run_timeout_seconds must be greater than 0")
+    if config.chat_heartbeat_interval_seconds <= 0:
+        raise ValueError("chat_heartbeat_interval_seconds must be greater than 0")
 
 
 def _allowed_device_ids_from_env() -> frozenset[str] | None:
@@ -1457,14 +1510,16 @@ def _elapsed_ms(started_at: float) -> int:
     return max(0, int((time.monotonic() - started_at) * 1000))
 
 
-def _chat_final_event(run_id: str, session_key: str, response: str) -> dict[str, Any]:
+def _chat_final_event(
+    run_id: str, session_key: str, response: str, *, seq: int = 2
+) -> dict[str, Any]:
     return {
         "type": "event",
         "event": "chat",
         "payload": {
             "runId": run_id,
             "sessionKey": session_key,
-            "seq": 2,
+            "seq": seq,
             "state": "final",
             "message": {
                 "role": "assistant",
@@ -1475,18 +1530,69 @@ def _chat_final_event(run_id: str, session_key: str, response: str) -> dict[str,
     }
 
 
-def _chat_error_event(run_id: str, session_key: str, error: ChatRunError) -> dict[str, Any]:
+def _chat_running_event(run_id: str, session_key: str, *, seq: int) -> dict[str, Any]:
     return {
         "type": "event",
         "event": "chat",
         "payload": {
             "runId": run_id,
             "sessionKey": session_key,
-            "seq": 2,
+            "seq": seq,
+            "state": "running",
+            "heartbeat": True,
+            "message": "Hermes is still working.",
+            "timestamp": _now_ms(),
+        },
+    }
+
+
+def _chat_error_event(
+    run_id: str, session_key: str, error: ChatRunError, *, seq: int = 2
+) -> dict[str, Any]:
+    return {
+        "type": "event",
+        "event": "chat",
+        "payload": {
+            "runId": run_id,
+            "sessionKey": session_key,
+            "seq": seq,
             "state": "error",
             "error": {"code": error.code, "message": error.safe_message},
         },
     }
+
+
+def _next_chat_seq(seq_ref: dict[str, int]) -> int:
+    seq_ref["value"] += 1
+    return seq_ref["value"]
+
+
+async def _emit_chat_heartbeats(
+    ws: web.WebSocketResponse,
+    *,
+    run_id: str,
+    session_key: str,
+    interval_seconds: float,
+    next_seq: Callable[[], int],
+    device_id: str,
+    started_at: float,
+) -> None:
+    while True:
+        await asyncio.sleep(interval_seconds)
+        if _ws_closed(ws):
+            return
+        heartbeat = _chat_running_event(run_id, session_key, seq=next_seq())
+        if not await _send_json_if_open(ws, heartbeat):
+            audit_log(
+                "info",
+                "chat.run_cancelled",
+                device_id_hash=hash_identifier(device_id),
+                session_key_hash=hash_identifier(session_key),
+                run_id_hash=hash_identifier(run_id),
+                reason="websocket_disconnected",
+                duration_ms=_elapsed_ms(started_at),
+            )
+            return
 
 
 def _discard_finished_task(

@@ -16,6 +16,8 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from .adapter import (
+    DEFAULT_CHAT_HEARTBEAT_INTERVAL_SECONDS,
+    DEFAULT_CHAT_RUN_TIMEOUT_SECONDS,
     DEFAULT_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS,
     DEFAULT_DEVICE_TOKEN_MAX_AGE_SECONDS,
     DEFAULT_GLOBAL_CONCURRENCY,
@@ -268,7 +270,26 @@ def main() -> None:
         help="Explicitly allow high-impact Hermes toolsets such as terminal or file",
     )
     hermes.add_argument(
-        "--timeout", type=float, default=float(os.environ.get("R1_HERMES_TIMEOUT", "180"))
+        "--timeout",
+        type=float,
+        default=float(
+            os.environ.get(
+                "R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS",
+                os.environ.get("R1_HERMES_TIMEOUT", str(DEFAULT_CHAT_RUN_TIMEOUT_SECONDS)),
+            )
+        ),
+        help="Maximum seconds an authenticated R1 chat run may occupy the gateway",
+    )
+    hermes.add_argument(
+        "--heartbeat-interval",
+        type=float,
+        default=float(
+            os.environ.get(
+                "R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS",
+                str(DEFAULT_CHAT_HEARTBEAT_INTERVAL_SECONDS),
+            )
+        ),
+        help="Seconds between generic running events while Hermes is still working",
     )
     hermes.add_argument(
         "--no-continue",
@@ -376,6 +397,10 @@ def main() -> None:
                 device_token_idle_timeout_seconds=args.device_token_idle_timeout_seconds,
                 idempotency_cache_max_entries=args.idempotency_cache_max_entries,
                 idempotency_cache_ttl_seconds=args.idempotency_cache_ttl_seconds,
+                chat_run_timeout_seconds=args.timeout if args.command == "hermes" else None,
+                chat_heartbeat_interval_seconds=(
+                    args.heartbeat_interval if args.command == "hermes" else None
+                ),
                 allow_remote_health=args.allow_remote_health,
                 health_diagnostics=args.health_diagnostics,
                 tls_cert_file=Path(args.tls_cert_file) if args.tls_cert_file else None,

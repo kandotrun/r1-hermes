@@ -695,6 +695,8 @@ def test_hermes_command_reads_concurrency_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("R1_HERMES_PER_DEVICE_CONCURRENCY", "3")
     monkeypatch.setenv("R1_HERMES_IDEMPOTENCY_CACHE_MAX_ENTRIES", "44")
     monkeypatch.setenv("R1_HERMES_IDEMPOTENCY_CACHE_TTL_SECONDS", "55")
+    monkeypatch.setenv("R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS", "240")
+    monkeypatch.setenv("R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS", "8")
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -711,7 +713,47 @@ def test_hermes_command_reads_concurrency_from_env(monkeypatch, tmp_path):
     assert captured["config"].per_device_concurrency == 3
     assert captured["config"].idempotency_cache_max_entries == 44
     assert captured["config"].idempotency_cache_ttl_seconds == 55
+    assert captured["config"].chat_run_timeout_seconds == 240
+    assert captured["config"].chat_heartbeat_interval_seconds == 8
     assert isinstance(captured["message_handler"], cli.HermesCliRunner)
+    assert captured["message_handler"].timeout_seconds == 240
+
+
+def test_hermes_command_timeout_flag_configures_gateway_and_runner(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeAdapter:
+        def __init__(self, config, *, message_handler):
+            captured["config"] = config
+            captured["message_handler"] = message_handler
+
+    async def fake_run_forever(adapter, *, ready_file=None):
+        captured["adapter"] = adapter
+        captured["ready_file"] = ready_file
+
+    monkeypatch.setattr(cli, "R1HermesAdapter", FakeAdapter)
+    monkeypatch.setattr(cli, "_run_forever", fake_run_forever)
+    monkeypatch.setenv("R1_HERMES_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "r1-hermes",
+            "hermes",
+            "--state-dir",
+            str(tmp_path),
+            "--timeout",
+            "90",
+            "--heartbeat-interval",
+            "3",
+        ],
+    )
+
+    cli.main()
+
+    assert captured["config"].chat_run_timeout_seconds == 90
+    assert captured["config"].chat_heartbeat_interval_seconds == 3
+    assert isinstance(captured["message_handler"], cli.HermesCliRunner)
+    assert captured["message_handler"].timeout_seconds == 90
 
 
 def test_hermes_command_allows_safe_and_web_toolsets(monkeypatch, tmp_path):
