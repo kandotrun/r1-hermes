@@ -32,6 +32,40 @@ python -m r1_hermes.capture_sanitizer \
   --input tests/fixtures/r1_payloads/<short-shape-name>.json
 ```
 
+## From frame-shape log to fixture
+
+When Rabbit R1 sends an unknown media method, first enable only the gateway's shape diagnostics:
+
+```bash
+R1_HERMES_FRAME_SHAPE_LOGGING=1 r1-hermes hermes \
+  --host 127.0.0.1 \
+  --port 18789 \
+  --toolsets safe
+```
+
+Or pass `--frame-shape-logging` to `r1-hermes serve` or `r1-hermes hermes`. Keep the same private
+network boundary used for pairing; this flag is for local compatibility debugging, not broad
+exposure.
+
+Trigger the Rabbit R1 action once, then copy only the local `frame.shape` audit event for review:
+
+```bash
+journalctl --user-unit r1-hermes.service --since '10 minutes ago' -o cat | grep '"frame.shape"'
+```
+
+The audit event is intentionally a shape, not a capture: it contains method names, object key sets,
+list lengths, string lengths, safe enum-like protocol values, and media-field paths. It does not
+contain tokens, raw device IDs, prompts, URLs, base64 strings, or media bytes. Unknown media methods
+still fail closed with `UNKNOWN_METHOD` after authentication, and pre-authentication frames still
+fail as unauthenticated.
+
+Use the shape log to decide what raw frame fields matter, then create a private capture of the
+smallest frame set needed to reproduce the parser gap. Keep that raw capture outside the repo and
+run the sanitizer with `--forbid` for every known gateway token, issued device token, raw device ID,
+prompt fragment, URL, account identifier, and any other private string. Commit only the sanitized
+fixture and tests. If a media field has bytes, base64, or a URL, the committed fixture should keep
+only a dummy placeholder such as `DUMMY_BINARY_DATA_OMITTED`.
+
 ## What gets redacted
 
 The sanitizer preserves the public frame shape but replaces sensitive or high-entropy details with

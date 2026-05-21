@@ -365,6 +365,37 @@ r1-hermes probe \
   --dump-frames
 ```
 
+For real Rabbit R1 media compatibility gaps, prefer server-side frame-shape diagnostics over raw
+frame dumps. Start the gateway with `--frame-shape-logging` or
+`R1_HERMES_FRAME_SHAPE_LOGGING=1` on the same private network boundary you already reviewed for
+pairing:
+
+```bash
+R1_HERMES_FRAME_SHAPE_LOGGING=1 r1-hermes hermes \
+  --host 127.0.0.1 \
+  --port 18789 \
+  --toolsets safe
+```
+
+The gateway then emits `frame.shape` audit events for request frames. These events include method
+names, object key sets, list lengths, string lengths, safe enum-like protocol values, media-field
+presence, and media-field paths. They do not include gateway tokens, issued device tokens, raw
+device IDs, prompt text, URLs, base64 strings, or media bytes. Unknown media methods still receive
+the generic `UNKNOWN_METHOD` response after authentication, and unauthenticated frames still receive
+`UNAUTHENTICATED`; the diagnostic flag does not enable new behavior or Hermes execution.
+
+Capture only the local audit line, not the raw frame, when asking maintainers what parser support
+is needed:
+
+```bash
+journalctl --user-unit r1-hermes.service --since '10 minutes ago' -o cat | grep '"frame.shape"'
+```
+
+When the shape shows a compatibility gap, keep any raw WebSocket capture outside the repository and
+turn it into a sanitized fixture with [`capture-replay.md`](capture-replay.md). Pass every known
+private value with `--forbid`, replace media bytes with `DUMMY_BINARY_DATA_OMITTED`, and commit only
+the sanitized JSON plus focused parser/replay tests.
+
 The default probe uses the standard `connect` handshake. To smoke-test the OpenClaw/Rabbit
 `gateway.connect` variant and its compatibility acknowledgement events, run:
 
@@ -409,6 +440,7 @@ Useful event names include:
 - `chat.run_started`, `chat.run_final`, and `chat.run_error` for authenticated run lifecycle.
 - R1-visible heartbeat frames use `event: chat`, `state: running`, and `heartbeat: true`; they are
   not audit logs and contain no prompt or tool output.
+- `frame.shape` at `INFO` only when frame-shape diagnostics are explicitly enabled.
 - `hermes.subprocess_failed` and `hermes.subprocess_timeout` for Hermes CLI failures.
 - `device.revoke`, `device.revoke_all`, and `device.cleanup` for local device-state operations.
 
