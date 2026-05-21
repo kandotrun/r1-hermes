@@ -590,7 +590,16 @@ What works now:
   high-impact override for host/file/automation control surfaces.
 - Global and per-device in-flight caps before Hermes subprocess execution.
 - Per-device/session `chat.send` dedupe by `idempotencyKey`, returning `BUSY_DUPLICATE` for an
-  active duplicate and replaying the cached final event for a recent completed duplicate.
+  active duplicate and replaying the cached final or error event for a recent completed duplicate.
+  If a mobile-network drop closes the socket after `chat.run_started`, an idempotent run can finish
+  in the background; reconnecting with the same device ID, `sessionKey`, and `idempotencyKey` is
+  deterministic. Clients should wait and retry on `BUSY_DUPLICATE`, stop retrying once a replayed
+  final or error event arrives, and generate a new `idempotencyKey` only for a genuinely new user
+  send.
+  If the final event was computed but not delivered because the socket closed, the gateway caches
+  that final/error event for the retry window. If the socket closed before the handler could start,
+  or the request failed parsing, there is no cached result; retrying the same frame re-enters normal
+  validation and may return the same safe parser error.
 - Generic started/final/error chat events back to the active WebSocket.
 - `chat.history` compatibility responses after authentication. History is intentionally unsupported
   in this standalone bridge: known and unknown `sessionKey` values both receive an empty

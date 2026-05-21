@@ -163,10 +163,16 @@ Requests over either cap receive a generic `BUSY` response before Hermes is invo
 Authenticated `chat.send` requests with an `idempotencyKey` are deduplicated per device and
 `sessionKey` in a bounded in-memory cache. A retry while the original Hermes run is still active
 receives `BUSY_DUPLICATE` and does not start another subprocess; a retry shortly after completion
-receives a duplicate acknowledgement and replay of the cached final chat event. The cache defaults
-to 256 entries and 5 minutes. Tune with `R1_HERMES_IDEMPOTENCY_CACHE_MAX_ENTRIES` and
-`R1_HERMES_IDEMPOTENCY_CACHE_TTL_SECONDS`, or the matching server CLI options, only when a
-deployment has reviewed the retry window and memory tradeoff.
+receives a duplicate acknowledgement and replay of the cached final or error chat event. If the R1
+disconnects after `chat.run_started`, the gateway lets an idempotent run finish so a reconnect can
+either see `BUSY_DUPLICATE` while work is active or receive the cached final/error event after work
+finishes. If the socket drops while the final event is being sent, the final/error event is cached
+before returning so the next retry can recover it. Parser failures such as unsupported media are not
+cached and remain safe deterministic errors; repeating a media-bearing send does not invoke Hermes
+or echo media bytes. The cache defaults to 256 entries and 5 minutes. Tune with
+`R1_HERMES_IDEMPOTENCY_CACHE_MAX_ENTRIES` and `R1_HERMES_IDEMPOTENCY_CACHE_TTL_SECONDS`, or the
+matching server CLI options, only when a deployment has reviewed the retry window and memory
+tradeoff.
 
 Wildcard bind hosts such as `0.0.0.0`, `::`, and numeric aliases for all interfaces fail closed by default.
 If you have explicitly reviewed the network boundary and still need a wildcard bind, opt in with
