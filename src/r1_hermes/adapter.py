@@ -1239,7 +1239,7 @@ class R1HermesAdapter:
                 raise
             except ChatRunError as exc:
                 error = exc
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 error = ChatRunTimeoutError()
             except Exception:  # pragma: no cover - defensive boundary
                 error = ChatRunError()
