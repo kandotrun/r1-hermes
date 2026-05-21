@@ -1205,7 +1205,7 @@ class R1HermesAdapter:
     ) -> AuthenticatedConnectionRegistration:
         async with self._authenticated_connection_lock:
             global_connections = self._authenticated_connections
-            device_connections = self._authenticated_by_device[device_id]
+            device_connections = self._authenticated_by_device.get(device_id, 0)
             if (
                 self.config.authenticated_connection_limit > 0
                 and global_connections >= self.config.authenticated_connection_limit

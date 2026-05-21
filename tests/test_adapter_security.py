@@ -888,11 +888,13 @@ async def test_authenticated_per_device_connection_cap_closes_excess_socket(
         )
         rejected = await second_ws.receive_json()
         close = await second_ws.receive()
+        device_ids_after_reject = adapter.state.device_ids()
 
         third_session, third_ws = await authenticated_ws(base_url, device_id="r1-other-device")
 
         assert rejected["ok"] is False
         assert rejected["error"]["code"] == "CONNECTION_LIMIT"
+        assert device_ids_after_reject == ["r1-per-device"]
         assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
         assert second_ws.close_code == 1008
         assert not first_ws.closed
