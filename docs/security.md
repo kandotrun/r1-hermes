@@ -103,6 +103,16 @@ The same opt-in can be supplied as `R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1` for 
 configuration. Do not use the override to work around public exposure, weak pairing controls, or an
 unclear physical-device ownership model.
 
+Before pairing or restarting a service, run `r1-hermes doctor` with the intended toolsets. It
+compares the effective Rabbit R1 toolsets with the configured Slack-equivalent bundle and fails when
+high-impact R1 toolsets are present without `--allow-high-impact-toolsets` or
+`R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1`. The built-in Slack-equivalent bundle is
+`safe,web,terminal,file`; override it with `R1_HERMES_SLACK_EQUIVALENT_TOOLSETS` or
+`--slack-equivalent-toolsets` only to match the reviewed Slack deployment. Use
+`--require-slack-equivalent-toolsets` for a hard preflight when R1 is intentionally expected to have
+Slack-equivalent access. Safe/minimal R1 mode should remain `safe`, or `safe,web` when web access is
+intentionally approved.
+
 Rabbit/OpenClaw clients may retry `chat.send` after a timeout or network hiccup. The adapter treats
 `idempotencyKey` as a per-device and per-`sessionKey` run key and keeps a bounded in-memory cache for
 in-flight and recently completed keys. An in-flight duplicate receives `BUSY_DUPLICATE` before any

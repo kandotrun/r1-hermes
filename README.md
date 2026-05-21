@@ -103,6 +103,31 @@ pairing flow, physical access model, and command/data access risk, then opts in 
 `--allow-high-impact-toolsets` or `R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1`. Keep `safe`, or
 `safe,web` when web access is intentionally needed, for normal R1 use.
 
+Run diagnostics before pairing or restarting a service. By default, `doctor` reports whether the
+effective R1 toolsets match the configured Slack-equivalent bundle without printing tokens or probe
+payloads:
+
+```bash
+r1-hermes doctor \
+  --host 127.0.0.1 \
+  --port 18789 \
+  --toolsets safe
+```
+
+For an intentionally reviewed Slack-equivalent R1 session, set the same effective bundle and the
+separate high-impact approval, then make parity a hard preflight check:
+
+```bash
+export R1_HERMES_TOOLSETS=safe,web,terminal,file
+export R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1
+r1-hermes doctor --require-slack-equivalent-toolsets --skip-hermes-smoke
+r1-hermes hermes --toolsets "$R1_HERMES_TOOLSETS" --allow-high-impact-toolsets
+```
+
+The default Slack-equivalent bundle is `safe,web,terminal,file`. Override it for a deployment with
+`R1_HERMES_SLACK_EQUIVALENT_TOOLSETS` or `--slack-equivalent-toolsets` so drift from the local Slack
+configuration is visible before a QR scan or service restart.
+
 Use Tailscale Serve, a Tailscale IP, firewall allowlist, or reverse proxy with mTLS or IP
 allowlisting when the Rabbit R1 must reach the gateway from another device. Do not use wildcard
 binds or expose the raw gateway directly to the public Internet. Copy-paste deployment recipes for

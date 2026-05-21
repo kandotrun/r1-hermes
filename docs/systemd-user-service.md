@@ -121,6 +121,21 @@ web access is needed. High-impact values such as `terminal`, `shell`, `file`/`fi
 browser/desktop automation, smart-home, or vehicle controls fail closed unless the service env file
 also sets `R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1` after a deployment review.
 
+Before `systemctl --user restart r1-hermes.service`, run `r1-hermes doctor` with the env file loaded
+so the effective R1 toolsets are compared with the configured Slack-equivalent bundle. For
+safe/minimal service mode, `R1_HERMES_TOOLSETS=safe` is expected to warn about Slack parity but exit
+zero. For intentionally reviewed Slack-equivalent service mode, set:
+
+```ini
+R1_HERMES_TOOLSETS=safe,web,terminal,file
+R1_HERMES_SLACK_EQUIVALENT_TOOLSETS=safe,web,terminal,file
+R1_HERMES_ALLOW_HIGH_IMPACT_TOOLSETS=1
+```
+
+Then run `r1-hermes doctor --require-slack-equivalent-toolsets` and restart only if it reports no
+failures. Adjust `R1_HERMES_SLACK_EQUIVALENT_TOOLSETS` only when the actual Slack deployment uses a
+different reviewed bundle.
+
 Leave HTTP health checks local-only unless a reviewed supervisor must reach `/healthz` from another
 host. The default response is only `{"ok": true}` and does not include paired-device counts. If a
 private, access-controlled monitoring path genuinely needs remote health checks, set
