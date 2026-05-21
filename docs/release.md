@@ -66,6 +66,12 @@ Expected public artifacts:
 - `r1-hermes-pip-inspect.json`
 - GitHub artifact attestations for the uploaded files
 
+The wheel contains the packaged systemd user-service templates under `r1_hermes/systemd/`, and the
+sdist contains both those packaged copies and the source-tree copies under `packaging/systemd/`.
+Release inspection fails if `r1_hermes/systemd/r1-hermes.service`,
+`r1_hermes/systemd/r1-hermes.env.example`, `packaging/systemd/r1-hermes.service`, or
+`packaging/systemd/r1-hermes.env.example` is missing from the artifact where it belongs.
+
 Before publishing a tag, run the full local validation from `docs/development-checks.md`, including
 `python -m pytest -q`, `python -m ruff check .`, `python -m compileall -q src tests`, and the build
 and install smoke checks.
@@ -80,6 +86,19 @@ sha256sum -c SHA256SUMS
 pip install ./r1_hermes-<version>-py3-none-any.whl[qr]
 r1-hermes --help
 ```
+
+To install the systemd user service from a release artifact without cloning the repository, use the
+packaged installer helper:
+
+```bash
+r1-hermes install-systemd-user
+```
+
+That writes `~/.config/systemd/user/r1-hermes.service` and
+`~/.config/r1-hermes/r1-hermes.env`, refuses to overwrite existing files unless `--overwrite` is
+set, and keeps the env example secret-free. Edit the env file locally and replace only the
+placeholder token value with a freshly generated gateway token. Do not paste real gateway tokens,
+QR payloads, or Rabbit R1 device IDs into release issues, PRs, or support logs.
 
 When GitHub artifact attestation verification is available in your environment, verify provenance
 against this repository before installing:

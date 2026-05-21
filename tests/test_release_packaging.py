@@ -28,13 +28,27 @@ SKIP_SOURCE_COPY = {
 }
 
 FORBIDDEN_ARCHIVE_NAME_PARTS = (
-    ".env",
     ".r1-hermes",
     "device-token-hmac",
     "devices.json",
     "r1-hermes-secret",
     "r1-hermes.ready",
     "tests/fixtures/r1_payloads",
+)
+
+FORBIDDEN_ARCHIVE_BASENAMES = (".env",)
+FORBIDDEN_ARCHIVE_BASENAME_PREFIXES = (".env.",)
+
+WHEEL_SYSTEMD_ASSETS = (
+    "r1_hermes/systemd/r1-hermes.service",
+    "r1_hermes/systemd/r1-hermes.env.example",
+)
+
+SDIST_SYSTEMD_ASSETS = (
+    "src/r1_hermes/systemd/r1-hermes.service",
+    "src/r1_hermes/systemd/r1-hermes.env.example",
+    "packaging/systemd/r1-hermes.service",
+    "packaging/systemd/r1-hermes.env.example",
 )
 
 SECRET_EXCLUSION_DOC_TEXT = (
@@ -105,6 +119,16 @@ def _archive_names(archive_path: Path) -> list[str]:
         return sdist.getnames()
 
 
+def _is_forbidden_archive_name(name: str) -> bool:
+    normalized = name.replace("\\", "/")
+    basename = Path(normalized).name
+    return (
+        any(part in normalized for part in FORBIDDEN_ARCHIVE_NAME_PARTS)
+        or basename in FORBIDDEN_ARCHIVE_BASENAMES
+        or any(basename.startswith(prefix) for prefix in FORBIDDEN_ARCHIVE_BASENAME_PREFIXES)
+    )
+
+
 def test_release_workflow_builds_auditable_artifacts_from_tags() -> None:
     workflow = _read(RELEASE_WORKFLOW)
 
@@ -139,6 +163,10 @@ def test_release_workflow_builds_auditable_artifacts_from_tags() -> None:
         "gh release create",
         "dist/*.whl",
         "dist/*.tar.gz",
+        "r1_hermes/systemd/r1-hermes.service",
+        "r1_hermes/systemd/r1-hermes.env.example",
+        "packaging/systemd/r1-hermes.service",
+        "packaging/systemd/r1-hermes.env.example",
     ):
         assert required in workflow
 
@@ -178,7 +206,8 @@ def test_manifest_excludes_secret_local_state_and_fixture_payloads() -> None:
         "prune .venv",
         "prune build",
         "prune dist",
-        "prune packaging",
+        "graft packaging/systemd",
+        "recursive-include src/r1_hermes/systemd",
         "prune tests",
         "global-exclude .env",
         "global-exclude .env.*",
@@ -188,6 +217,7 @@ def test_manifest_excludes_secret_local_state_and_fixture_payloads() -> None:
         "global-exclude *.ready",
     ):
         assert required in manifest
+    assert "prune packaging" not in manifest
 
 
 def test_wheel_and_sdist_exclude_local_secret_state(tmp_path: Path) -> None:
@@ -217,10 +247,17 @@ def test_wheel_and_sdist_exclude_local_secret_state(tmp_path: Path) -> None:
     sdist_names = _archive_names(sdist_path)
     all_archive_names = [name.replace("\\", "/") for name in (*wheel_names, *sdist_names)]
 
-    for forbidden_part in FORBIDDEN_ARCHIVE_NAME_PARTS:
-        assert not any(forbidden_part in name for name in all_archive_names), forbidden_part
+    forbidden_names = [name for name in all_archive_names if _is_forbidden_archive_name(name)]
+    assert forbidden_names == []
 
     assert "r1_hermes/cli.py" in wheel_names
+    for required in WHEEL_SYSTEMD_ASSETS:
+        assert required in wheel_names
+
+    normalized_sdist_names = [name.replace("\\", "/") for name in sdist_names]
+    for required in SDIST_SYSTEMD_ASSETS:
+        assert any(name.endswith(f"/{required}") for name in normalized_sdist_names), required
+
     assert any(name.endswith(".dist-info/METADATA") for name in wheel_names)
     assert any(name.endswith("/pyproject.toml") for name in sdist_names)
     assert any(name.endswith("/README.md") for name in sdist_names)
@@ -249,6 +286,8 @@ def test_release_docs_cover_versioning_install_verification_and_secret_handling(
         "release tags are self-verifying in CI",
         "python -m pip_audit . --strict --progress-spinner off",
         "r1_hermes-<version>-py3-none-any.whl",
+        "r1-hermes install-systemd-user",
+        "packaged systemd user-service templates",
         "SHA256SUMS",
         "sha256sum -c SHA256SUMS",
         "gh attestation verify",

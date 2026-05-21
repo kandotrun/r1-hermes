@@ -330,12 +330,13 @@ supports best-effort `send_text()` delivery to active WebSocket sessions. See
 
 ## systemd user service
 
-For persistent operation, use the hardened user-service template in
-[`packaging/systemd/r1-hermes.service`](packaging/systemd/r1-hermes.service) with an env file at
-`~/.config/r1-hermes/r1-hermes.env`. The unit does not contain token literals and uses
-`--ready-file` for startup readiness. The HTTP `/healthz` endpoint is local-only by default and
-returns only `{"ok": true}`; paired-device counts are diagnostic data and require an explicit
-`--health-diagnostics` or `R1_HERMES_HEALTH_DIAGNOSTICS=1` opt-in.
+For persistent operation from a wheel or sdist install, run `r1-hermes install-systemd-user` to
+write the hardened user-service template and env example from the installed package. In a trusted
+source checkout, the same templates are also available under `packaging/systemd/` for inspection.
+The unit does not contain token literals and uses `--ready-file` for startup readiness. The HTTP
+`/healthz` endpoint is local-only by default and returns only `{"ok": true}`; paired-device counts
+are diagnostic data and require an explicit `--health-diagnostics` or
+`R1_HERMES_HEALTH_DIAGNOSTICS=1` opt-in.
 
 See [`docs/systemd-user-service.md`](docs/systemd-user-service.md) for install, enable, status,
 logs, rollback, localhost, and Tailscale examples. For a public native `wss://` listener without a

@@ -1,10 +1,23 @@
+from __future__ import annotations
+
+import os
+import stat
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVICE = ROOT / "packaging" / "systemd" / "r1-hermes.service"
 ENV_EXAMPLE = ROOT / "packaging" / "systemd" / "r1-hermes.env.example"
+PACKAGE_SYSTEMD = ROOT / "src" / "r1_hermes" / "systemd"
 DOC = ROOT / "docs" / "systemd-user-service.md"
 WILDCARD_HOST = ".".join(("0", "0", "0", "0"))
+
+
+def _pythonpath_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT / "src")
+    return env
 
 
 def test_systemd_service_uses_env_file_without_inline_token() -> None:
@@ -54,6 +67,103 @@ def test_env_example_keeps_localhost_default_and_token_placeholder() -> None:
     assert "# R1_HERMES_ALLOW_REMOTE_HEALTH=1" in env_text
     assert "# R1_HERMES_HEALTH_DIAGNOSTICS=1" in env_text
     assert WILDCARD_HOST not in env_text
+
+
+def test_packaged_systemd_assets_match_source_templates() -> None:
+    assert (PACKAGE_SYSTEMD / "r1-hermes.service").read_text() == SERVICE.read_text()
+    assert (PACKAGE_SYSTEMD / "r1-hermes.env.example").read_text() == ENV_EXAMPLE.read_text()
+
+
+def test_install_systemd_user_helper_writes_templates_without_secrets(tmp_path: Path) -> None:
+    unit_output = tmp_path / "config" / "systemd" / "user" / "r1-hermes.service"
+    env_output = tmp_path / "config" / "r1-hermes" / "r1-hermes.env"
+
+    result = subprocess.run(  # noqa: S603 - trusted CLI invocation in the test interpreter.
+        [
+            sys.executable,
+            "-m",
+            "r1_hermes.cli",
+            "install-systemd-user",
+            "--unit-output",
+            str(unit_output),
+            "--env-output",
+            str(env_output),
+        ],
+        cwd=ROOT,
+        env=_pythonpath_env(),
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert unit_output.read_text() == SERVICE.read_text()
+    assert env_output.read_text() == ENV_EXAMPLE.read_text()
+    assert stat.S_IMODE(env_output.stat().st_mode) == 0o600
+    assert stat.S_IMODE(unit_output.stat().st_mode) == 0o644
+    assert "R1_HERMES_GATEWAY_TOKEN=" not in result.stdout
+    assert "replace-with-generated-token" not in result.stdout
+    assert str(unit_output) in result.stdout
+    assert str(env_output) in result.stdout
+
+
+def test_install_systemd_user_helper_refuses_overwrite_without_flag(tmp_path: Path) -> None:
+    unit_output = tmp_path / "r1-hermes.service"
+    env_output = tmp_path / "r1-hermes.env"
+    unit_output.write_text("existing unit\n")
+    env_output.write_text("existing env\n")
+
+    result = subprocess.run(  # noqa: S603 - trusted CLI invocation in the test interpreter.
+        [
+            sys.executable,
+            "-m",
+            "r1_hermes.cli",
+            "install-systemd-user",
+            "--unit-output",
+            str(unit_output),
+            "--env-output",
+            str(env_output),
+        ],
+        cwd=ROOT,
+        env=_pythonpath_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "already exists" in result.stderr
+    assert unit_output.read_text() == "existing unit\n"
+    assert env_output.read_text() == "existing env\n"
+
+
+def test_install_systemd_user_helper_preflights_both_outputs(tmp_path: Path) -> None:
+    unit_output = tmp_path / "r1-hermes.service"
+    env_output = tmp_path / "r1-hermes.env"
+    env_output.write_text("existing env\n")
+
+    result = subprocess.run(  # noqa: S603 - trusted CLI invocation in the test interpreter.
+        [
+            sys.executable,
+            "-m",
+            "r1_hermes.cli",
+            "install-systemd-user",
+            "--unit-output",
+            str(unit_output),
+            "--env-output",
+            str(env_output),
+        ],
+        cwd=ROOT,
+        env=_pythonpath_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "already exists" in result.stderr
+    assert not unit_output.exists()
+    assert env_output.read_text() == "existing env\n"
 
 
 def test_systemd_docs_cover_operations_and_health_checks() -> None:

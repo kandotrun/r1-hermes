@@ -85,14 +85,25 @@ jobs:
           import zipfile
           from pathlib import Path
 
-          forbidden = (
-              ".env",
+          forbidden_parts = (
               ".r1-hermes",
               "device-token-hmac",
               "devices.json",
               "r1-hermes-secret",
               "r1-hermes.ready",
               "tests/fixtures/r1_payloads",
+          )
+          forbidden_basenames = (".env",)
+          forbidden_basename_prefixes = (".env.",)
+          required_wheel = (
+              "r1_hermes/systemd/r1-hermes.service",
+              "r1_hermes/systemd/r1-hermes.env.example",
+          )
+          required_sdist = (
+              "src/r1_hermes/systemd/r1-hermes.service",
+              "src/r1_hermes/systemd/r1-hermes.env.example",
+              "packaging/systemd/r1-hermes.service",
+              "packaging/systemd/r1-hermes.env.example",
           )
           artifacts = [*Path("dist").glob("*.whl"), *Path("dist").glob("*.tar.gz")]
           if not artifacts:
@@ -101,12 +112,26 @@ jobs:
               if artifact.suffix == ".whl":
                   with zipfile.ZipFile(artifact) as archive:
                       names = archive.namelist()
+                  missing = [name for name in required_wheel if name not in names]
               else:
                   with tarfile.open(artifact, "r:gz") as archive:
                       names = archive.getnames()
+                  normalized = [name.replace("\\", "/") for name in names]
+                  missing = [
+                      name
+                      for name in required_sdist
+                      if not any(path.endswith(f"/{name}") for path in normalized)
+                  ]
+              if missing:
+                  raise SystemExit(f"missing systemd asset(s) in {artifact}: {', '.join(missing)}")
               for name in names:
                   normalized = name.replace("\\", "/")
-                  if any(part in normalized for part in forbidden):
+                  basename = Path(normalized).name
+                  if (
+                      any(part in normalized for part in forbidden_parts)
+                      or basename in forbidden_basenames
+                      or any(basename.startswith(prefix) for prefix in forbidden_basename_prefixes)
+                  ):
                       raise SystemExit(f"forbidden path in {artifact}: {normalized}")
           PY
       - name: Verify wheel install

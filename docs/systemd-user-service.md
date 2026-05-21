@@ -16,13 +16,29 @@ cannot be used.
 
 ## Install
 
-Install the package for the user that will run the service:
+Install the release wheel for the user that will run the service, then write the packaged systemd
+user-service templates from that installed package:
 
 ```bash
-python -m pip install --user '.[qr]'
+python -m pip install --user './r1_hermes-<version>-py3-none-any.whl[qr]'
+r1-hermes install-systemd-user
 ```
 
-Install the unit and create the env file:
+The helper writes `~/.config/systemd/user/r1-hermes.service` with mode `0644` and
+`~/.config/r1-hermes/r1-hermes.env` with mode `0600`. It fails if either file already exists;
+review the current local files first, then rerun with `--overwrite` only when replacing them is
+intentional. The env template contains only placeholders and comments, never a generated gateway
+token.
+
+For source checkout installs, use the same helper after the editable install:
+
+```bash
+python -m pip install --user -e '.[qr]'
+r1-hermes install-systemd-user
+```
+
+If you need to inspect or copy the templates manually from a trusted checkout, they remain in
+`packaging/systemd/`:
 
 ```bash
 mkdir -p ~/.config/systemd/user ~/.config/r1-hermes
@@ -30,6 +46,9 @@ cp packaging/systemd/r1-hermes.service ~/.config/systemd/user/r1-hermes.service
 cp packaging/systemd/r1-hermes.env.example ~/.config/r1-hermes/r1-hermes.env
 chmod 600 ~/.config/r1-hermes/r1-hermes.env
 ```
+
+Wheel-only operators should not use the `packaging/systemd/` paths; those are source-tree paths and
+may not exist outside a checkout. Use `r1-hermes install-systemd-user` instead.
 
 Generate a gateway token and edit only the env file:
 
