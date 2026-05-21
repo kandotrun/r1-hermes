@@ -14,6 +14,9 @@ SECRET_REPLACEMENTS = {
     "DUMMY_BINARY_DATA_OMITTED": "[REDACTED_MEDIA]",
     "cjEtaW1hZ2U=": "[REDACTED_MEDIA]",
 }
+FIXTURE_REPLAY_REPLACEMENTS = {
+    "data:image/jpeg;base64,DUMMY_BINARY_DATA_OMITTED": "data:image/jpeg;base64,cjEtaW1hZ2U=",
+}
 MEDIA_DATA_KEYS = {"data", "b64_json", "base64", "bytes", "blob"}
 
 
@@ -29,6 +32,9 @@ class FixtureReplayFlow:
     history_fixture: str | None = None
     expected_error_code: str | None = None
     expected_error_message: str | None = None
+    connect_frame_id: str | None = None
+    chat_frame_id: str | None = None
+    history_frame_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -62,10 +68,18 @@ async def replay_fixture_flow(
     gateway_token: str,
 ) -> FixtureReplayResult:
     frames: list[dict[str, Any]] = []
-    connect_frame = _load_fixture(fixture_dir, flow.connect_fixture)
-    chat_frame = _load_fixture(fixture_dir, flow.chat_fixture)
+    connect_frame = _load_fixture(
+        fixture_dir,
+        flow.connect_fixture,
+        frame_id=flow.connect_frame_id,
+    )
+    chat_frame = _hydrate_media_placeholders(
+        _load_fixture(fixture_dir, flow.chat_fixture, frame_id=flow.chat_frame_id)
+    )
     history_frame = (
-        _load_fixture(fixture_dir, flow.history_fixture) if flow.history_fixture else None
+        _load_fixture(fixture_dir, flow.history_fixture, frame_id=flow.history_frame_id)
+        if flow.history_fixture
+        else None
     )
     safe_connect_frame = _safe_frame(connect_frame)
     connect_frame = _replace_text(connect_frame, {"DUMMY_GATEWAY_TOKEN_DO_NOT_USE": gateway_token})
@@ -173,8 +187,15 @@ async def replay_fixture_flow(
     )
 
 
-def _load_fixture(fixture_dir: Path, name: str) -> dict[str, Any]:
+def _load_fixture(fixture_dir: Path, name: str, *, frame_id: str | None = None) -> dict[str, Any]:
     data = json.loads((fixture_dir / name).read_text())
+    if isinstance(data, dict) and isinstance(data.get("frames"), list):
+        if frame_id is None:
+            raise AssertionError(f"flow fixture requires frame_id: {name}")
+        for frame in data["frames"]:
+            if isinstance(frame, dict) and frame.get("id") == frame_id:
+                return frame
+        raise AssertionError(f"frame id {frame_id!r} not found in fixture: {name}")
     if not isinstance(data, dict):
         raise AssertionError(f"fixture must be a JSON object: {name}")
     return data
@@ -182,6 +203,10 @@ def _load_fixture(fixture_dir: Path, name: str) -> dict[str, Any]:
 
 def _safe_frame(frame: Mapping[str, Any]) -> dict[str, Any]:
     return _redact_secrets(dict(frame))
+
+
+def _hydrate_media_placeholders(frame: dict[str, Any]) -> dict[str, Any]:
+    return _replace_text(frame, FIXTURE_REPLAY_REPLACEMENTS)
 
 
 def _redact_secrets(value: Any) -> Any:

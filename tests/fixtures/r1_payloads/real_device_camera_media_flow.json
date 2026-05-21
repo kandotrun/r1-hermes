@@ -1,0 +1,71 @@
+{
+  "frames": [
+    {
+      "type": "req",
+      "id": "connect-camera-flow-001",
+      "method": "gateway.connect",
+      "params": {
+        "auth": {
+          "token": "DUMMY_GATEWAY_TOKEN_DO_NOT_USE"
+        },
+        "device": {
+          "id": "r1-camera-flow",
+          "model": "Rabbit R1 sanitized camera fixture"
+        },
+        "client": {
+          "displayName": "Rabbit R1 sanitized camera fixture"
+        },
+        "protocol": {
+          "name": "clawdbot-gateway",
+          "version": 1
+        }
+      }
+    },
+    {
+      "type": "event",
+      "event": "connect.ok",
+      "payload": {
+        "ok": true,
+        "deviceId": "r1-camera-flow",
+        "ts": 1710000000000
+      }
+    },
+    {
+      "type": "event",
+      "event": "node.pair.approved",
+      "payload": {
+        "ok": true,
+        "deviceId": "r1-camera-flow",
+        "ts": 1710000000000
+      }
+    },
+    {
+      "type": "req",
+      "id": "chat-camera-flow-001",
+      "method": "chat.send",
+      "params": {
+        "message": {
+          "content": [
+            {
+              "type": "input_text",
+              "text": "describe the sanitized camera image"
+            },
+            {
+              "type": "input_image",
+              "mediaType": "image/jpeg",
+              "filename": "r1-camera.jpg",
+              "data": "data:image/jpeg;base64,DUMMY_BINARY_DATA_OMITTED"
+            }
+          ]
+        },
+        "session": {
+          "key": "camera-main"
+        },
+        "idempotencyKey": "camera-run-001",
+        "auth": {
+          "deviceToken": "DUMMY_DEVICE_TOKEN_DO_NOT_USE"
+        }
+      }
+    }
+  ]
+}
