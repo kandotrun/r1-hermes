@@ -158,6 +158,10 @@ def test_server_command_reads_unauthenticated_limit_env(monkeypatch, tmp_path):
     monkeypatch.setenv("R1_HERMES_UNAUTHENTICATED_ATTEMPT_LIMIT", "4")
     monkeypatch.setenv("R1_HERMES_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS", "5")
     monkeypatch.setenv("R1_HERMES_UNAUTHENTICATED_COOLDOWN_SECONDS", "6")
+    monkeypatch.setenv("R1_HERMES_AUTHENTICATED_CONNECTION_LIMIT", "7")
+    monkeypatch.setenv("R1_HERMES_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT", "2")
+    monkeypatch.setenv("R1_HERMES_AUTHENTICATED_IDLE_TIMEOUT_SECONDS", "15")
+    monkeypatch.setenv("R1_HERMES_AUTHENTICATED_MAX_LIFETIME_SECONDS", "120")
     monkeypatch.setenv("R1_HERMES_DEVICE_TOKEN_MAX_AGE_SECONDS", "60")
     monkeypatch.setenv("R1_HERMES_DEVICE_TOKEN_IDLE_TIMEOUT_SECONDS", "30")
     monkeypatch.setattr(
@@ -184,6 +188,10 @@ def test_server_command_reads_unauthenticated_limit_env(monkeypatch, tmp_path):
     assert config.unauthenticated_attempt_limit == 4
     assert config.unauthenticated_attempt_window_seconds == 5
     assert config.unauthenticated_cooldown_seconds == 6
+    assert config.authenticated_connection_limit == 7
+    assert config.authenticated_per_device_connection_limit == 2
+    assert config.authenticated_idle_timeout_seconds == 15
+    assert config.authenticated_max_lifetime_seconds == 120
     assert config.device_token_max_age_seconds == 60
     assert config.device_token_idle_timeout_seconds == 30
 
@@ -665,6 +673,14 @@ def test_serve_command_passes_concurrency_options(monkeypatch, tmp_path):
             "11",
             "--idempotency-cache-ttl-seconds",
             "22",
+            "--authenticated-connection-limit",
+            "4",
+            "--authenticated-per-device-connection-limit",
+            "1",
+            "--authenticated-idle-timeout-seconds",
+            "30",
+            "--authenticated-max-lifetime-seconds",
+            "600",
         ],
     )
 
@@ -674,6 +690,10 @@ def test_serve_command_passes_concurrency_options(monkeypatch, tmp_path):
     assert captured["config"].per_device_concurrency == 2
     assert captured["config"].idempotency_cache_max_entries == 11
     assert captured["config"].idempotency_cache_ttl_seconds == 22
+    assert captured["config"].authenticated_connection_limit == 4
+    assert captured["config"].authenticated_per_device_connection_limit == 1
+    assert captured["config"].authenticated_idle_timeout_seconds == 30
+    assert captured["config"].authenticated_max_lifetime_seconds == 600
 
 
 def test_hermes_command_reads_concurrency_from_env(monkeypatch, tmp_path):
@@ -697,6 +717,10 @@ def test_hermes_command_reads_concurrency_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("R1_HERMES_IDEMPOTENCY_CACHE_TTL_SECONDS", "55")
     monkeypatch.setenv("R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS", "240")
     monkeypatch.setenv("R1_HERMES_CHAT_HEARTBEAT_INTERVAL_SECONDS", "8")
+    monkeypatch.setenv("R1_HERMES_AUTHENTICATED_CONNECTION_LIMIT", "9")
+    monkeypatch.setenv("R1_HERMES_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT", "4")
+    monkeypatch.setenv("R1_HERMES_AUTHENTICATED_IDLE_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("R1_HERMES_AUTHENTICATED_MAX_LIFETIME_SECONDS", "900")
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -715,6 +739,10 @@ def test_hermes_command_reads_concurrency_from_env(monkeypatch, tmp_path):
     assert captured["config"].idempotency_cache_ttl_seconds == 55
     assert captured["config"].chat_run_timeout_seconds == 240
     assert captured["config"].chat_heartbeat_interval_seconds == 8
+    assert captured["config"].authenticated_connection_limit == 9
+    assert captured["config"].authenticated_per_device_connection_limit == 4
+    assert captured["config"].authenticated_idle_timeout_seconds == 45
+    assert captured["config"].authenticated_max_lifetime_seconds == 900
     assert isinstance(captured["message_handler"], cli.HermesCliRunner)
     assert captured["message_handler"].timeout_seconds == 240
 

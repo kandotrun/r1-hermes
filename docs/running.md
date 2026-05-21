@@ -84,15 +84,35 @@ one per authenticated device ID:
 r1-hermes hermes \
   --host 100.x.y.z \
   --port 18789 \
+  --authenticated-connection-limit 8 \
+  --authenticated-per-device-connection-limit 2 \
+  --authenticated-idle-timeout-seconds 300 \
+  --authenticated-max-lifetime-seconds 3600 \
   --global-concurrency 2 \
   --per-device-concurrency 1
 ```
 
-The same settings can be supplied through `R1_HERMES_GLOBAL_CONCURRENCY` and
+The same chat-run settings can be supplied through `R1_HERMES_GLOBAL_CONCURRENCY` and
 `R1_HERMES_PER_DEVICE_CONCURRENCY`. Keep `2`/`1` for one personal Rabbit R1. For multiple trusted
 devices, increase only the global cap to the number of concurrent Hermes subprocesses the host can
 comfortably run; keep the per-device cap low unless one device is intentionally allowed to occupy
-several slots. Requests over either cap receive `BUSY` before Hermes is invoked.
+several slots. Requests over either chat-run cap receive `BUSY` before Hermes is invoked.
+
+Authenticated WebSocket sockets have separate caps and lifetime policy. Defaults allow eight total
+authenticated sockets, two per Rabbit R1 `device.id`, five idle minutes, and one hour maximum
+lifetime. Tune these with `R1_HERMES_AUTHENTICATED_CONNECTION_LIMIT`,
+`R1_HERMES_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT`,
+`R1_HERMES_AUTHENTICATED_IDLE_TIMEOUT_SECONDS`, and
+`R1_HERMES_AUTHENTICATED_MAX_LIFETIME_SECONDS`. Extra authenticated sockets receive
+`CONNECTION_LIMIT` and close with WebSocket policy-violation code `1008`; idle sockets receive
+`AUTHENTICATED_IDLE_TIMEOUT`; over-lifetime sockets receive `AUTHENTICATED_CONNECTION_EXPIRED`.
+The idle and lifetime monitor waits while a chat run is active, so a normal probe or long Hermes run
+is not interrupted just because no additional frames arrive while Hermes is working.
+
+For one personal R1, keep the defaults or lower the per-device socket cap to `1` if your client
+does not keep a reconnect socket open. For a reviewed multi-device deployment, set the global socket
+cap slightly above the expected number of simultaneously paired devices and keep the per-device cap
+small so one leaked device token cannot occupy all file descriptors.
 
 Each authenticated R1 chat run has an explicit gateway timeout. The default is 180 seconds. Set it
 with `--timeout`, `R1_HERMES_CHAT_RUN_TIMEOUT_SECONDS`, or the legacy service value
@@ -333,9 +353,14 @@ R1_HERMES_UNAUTHENTICATED_ATTEMPT_LIMIT=8
 R1_HERMES_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS=60
 R1_HERMES_UNAUTHENTICATED_COOLDOWN_SECONDS=60
 R1_HERMES_UNAUTHENTICATED_TIMEOUT_SECONDS=30
+R1_HERMES_AUTHENTICATED_CONNECTION_LIMIT=8
+R1_HERMES_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT=2
+R1_HERMES_AUTHENTICATED_IDLE_TIMEOUT_SECONDS=300
+R1_HERMES_AUTHENTICATED_MAX_LIFETIME_SECONDS=3600
 ```
 
-These limits protect the handshake path but are not a substitute for Tailscale, firewall rules,
+The unauthenticated limits protect the handshake path. The authenticated limits bound already
+paired sockets after `connect` succeeds. Neither set is a substitute for Tailscale, firewall rules,
 mTLS, or IP allowlisting.
 
 Device tokens expire after 90 days from pairing or 30 idle days by default:
@@ -438,6 +463,8 @@ Useful event names include:
 - `auth.failure` and `auth.parser_error` at `WARNING` for bad tokens versus malformed handshake
   payloads.
 - `rate_limited` and `busy_rejected` at `WARNING` before Hermes is invoked.
+- `auth.connection_rejected` and `auth.connection_closed` for authenticated socket caps and
+  idle/lifetime policy closes.
 - `chat.run_started`, `chat.run_final`, and `chat.run_error` for authenticated run lifecycle.
 - R1-visible heartbeat frames use `event: chat`, `state: running`, and `heartbeat: true`; they are
   not audit logs and contain no prompt or tool output.

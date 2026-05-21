@@ -10,7 +10,7 @@ This repository is intentionally security-first. It implements the Rabbit R1/Ope
 - no unauthenticated admin page
 - device tokens are bound to device IDs and stored only as keyed HMAC digests
 - device tokens expire by age and idle time, and stale records can be pruned locally
-- unauthenticated handshake limits plus authenticated rate, length, global concurrency, and per-device concurrency limits
+- unauthenticated handshake limits plus authenticated socket, rate, length, global concurrency, and per-device concurrency limits
 - explicit install docs and security checklist
 
 Status: runnable MVP. The default runtime is a standalone bridge that accepts Rabbit R1/OpenClaw
@@ -91,6 +91,9 @@ r1-hermes hermes \
   --port 18789 \
   --allowed-device-id r1-known-device-id \
   --toolsets safe,web \
+  --authenticated-connection-limit 8 \
+  --authenticated-per-device-connection-limit 2 \
+  --authenticated-idle-timeout-seconds 300 \
   --global-concurrency 2 \
   --per-device-concurrency 1 \
   --timeout 180 \
@@ -159,6 +162,16 @@ to `1`. A single-user Rabbit R1 deployment should usually keep those defaults. F
 multi-device deployment, raise the global cap only to the number of simultaneous Hermes subprocesses
 the host can absorb, and keep the per-device cap low so one device cannot monopolize the gateway.
 Requests over either cap receive a generic `BUSY` response before Hermes is invoked.
+
+Authenticated WebSocket sockets are also bounded before they can sit idle indefinitely.
+`R1_HERMES_AUTHENTICATED_CONNECTION_LIMIT` defaults to `8` total authenticated sockets,
+`R1_HERMES_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT` defaults to `2` per `device.id`,
+`R1_HERMES_AUTHENTICATED_IDLE_TIMEOUT_SECONDS` defaults to `300`, and
+`R1_HERMES_AUTHENTICATED_MAX_LIFETIME_SECONDS` defaults to `3600`. Extra authenticated sockets
+receive `CONNECTION_LIMIT` and close with WebSocket policy-violation code `1008`. Idle sockets
+receive `AUTHENTICATED_IDLE_TIMEOUT`; sockets over the lifetime cap receive
+`AUTHENTICATED_CONNECTION_EXPIRED`. Active chat runs are allowed to finish before idle/lifetime
+close policy is applied.
 
 Authenticated `chat.send` requests with an `idempotencyKey` are deduplicated per device and
 `sessionKey` in a bounded in-memory cache. A retry while the original Hermes run is still active
@@ -288,6 +301,8 @@ The demo handler echoes messages. Use `r1-hermes hermes` for a gateway that actu
   `chat.send` is accepted.
 - Unauthenticated WebSocket clients are limited by peer IP before authentication. Repeated bad or
   malformed handshake attempts are closed with a policy-violation code and never reach Hermes.
+- Authenticated WebSocket clients are capped globally and per device, and idle or over-lifetime
+  sockets are closed with generic policy errors before they can accumulate indefinitely.
 - Each device/session key resumes a stable Hermes CLI session via `hermes chat --continue r1-hermes-...`.
 - The gateway enforces global and per-device in-flight caps before starting `hermes chat`.
 - High-impact Hermes toolsets such as `terminal`, `file`, smart-home, browser/desktop automation,
@@ -305,6 +320,10 @@ R1_HERMES_UNAUTHENTICATED_ATTEMPT_LIMIT=8
 R1_HERMES_UNAUTHENTICATED_ATTEMPT_WINDOW_SECONDS=60
 R1_HERMES_UNAUTHENTICATED_COOLDOWN_SECONDS=60
 R1_HERMES_UNAUTHENTICATED_TIMEOUT_SECONDS=30
+R1_HERMES_AUTHENTICATED_CONNECTION_LIMIT=8
+R1_HERMES_AUTHENTICATED_PER_DEVICE_CONNECTION_LIMIT=2
+R1_HERMES_AUTHENTICATED_IDLE_TIMEOUT_SECONDS=300
+R1_HERMES_AUTHENTICATED_MAX_LIFETIME_SECONDS=3600
 R1_HERMES_RATE_LIMIT_MESSAGES=12
 R1_HERMES_RATE_LIMIT_WINDOW_SECONDS=60
 R1_HERMES_DEVICE_TOKEN_MAX_AGE_SECONDS=7776000

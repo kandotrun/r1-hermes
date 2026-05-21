@@ -166,6 +166,7 @@ class R1NativeGatewayAdapter(R1HermesAdapter):
             self._active_sockets[(_safe_component(device_id), safe_session_key)] = ws
 
     async def _on_ws_closed(self, ws: web.WebSocketResponse, *, device_id: str) -> None:
+        await super()._on_ws_closed(ws, device_id=device_id)
         safe_device_id = _safe_component(device_id)
         async with self._active_socket_lock:
             stale_keys = [
