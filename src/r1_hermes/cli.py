@@ -32,6 +32,7 @@ from .adapter import (
     _is_wildcard_public_bind,
 )
 from .hermes_runner import HERMES_SMOKE_QUERY, HermesCliRunner, run_hermes_smoke
+from .media import DEFAULT_MEDIA_MAX_BYTES, DEFAULT_MEDIA_TTL_SECONDS
 from .qr import build_pairing_payload, write_qr_png
 from .r1_client import R1ProbeClient
 from .toolsets import high_impact_toolset_error, high_impact_toolsets, parse_toolsets
@@ -158,6 +159,18 @@ def add_server_args(parser: argparse.ArgumentParser) -> None:
             )
         ),
         help="Seconds to keep completed chat.send idempotency keys in memory",
+    )
+    parser.add_argument(
+        "--media-max-file-bytes",
+        type=int,
+        default=int(os.environ.get("R1_HERMES_MEDIA_MAX_FILE_BYTES", str(DEFAULT_MEDIA_MAX_BYTES))),
+        help="Maximum bytes per accepted image attachment before Hermes is invoked",
+    )
+    parser.add_argument(
+        "--media-ttl-seconds",
+        type=int,
+        default=int(os.environ.get("R1_HERMES_MEDIA_TTL_SECONDS", str(DEFAULT_MEDIA_TTL_SECONDS))),
+        help="Seconds before stale private media uploads are pruned",
     )
     add_device_expiry_args(parser)
 
@@ -407,6 +420,8 @@ def main() -> None:
                 chat_heartbeat_interval_seconds=(
                     args.heartbeat_interval if args.command == "hermes" else None
                 ),
+                media_max_file_bytes=args.media_max_file_bytes,
+                media_ttl_seconds=args.media_ttl_seconds,
                 allow_remote_health=args.allow_remote_health,
                 health_diagnostics=args.health_diagnostics,
                 tls_cert_file=Path(args.tls_cert_file) if args.tls_cert_file else None,

@@ -52,9 +52,9 @@
             },
             {
               "type": "input_image",
-              "mediaType": "image/jpeg",
-              "filename": "r1-camera.jpg",
-              "data": "data:image/jpeg;base64,DUMMY_BINARY_DATA_OMITTED"
+              "mediaType": "image/png",
+              "filename": "r1-camera.png",
+              "data": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
             }
           ]
         },

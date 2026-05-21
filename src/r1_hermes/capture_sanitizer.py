@@ -29,6 +29,10 @@ SANITIZED_FRAME_ID = "sanitized-frame-001"
 SANITIZED_TIMESTAMP_MS = 1710000000000
 DUMMY_BINARY_DATA = "DUMMY_BINARY_DATA_OMITTED"
 DUMMY_IMAGE_BASE64 = "cjEtaW1hZ2U="
+PUBLIC_TINY_PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/"
+    "p9sAAAAASUVORK5CYII="
+)
 SAFE_TAILSCALE_IP = "100.64.0.10"
 SAFE_TEST_NET_IP = "192.0.2.10"
 SAFE_WS_URL = f"ws://{SAFE_TAILSCALE_IP}:18789/"
@@ -425,7 +429,10 @@ def _is_public_binary_placeholder(value: str) -> bool:
         encoded = encoded.strip()
         return bool(
             separator
-            and (encoded == DUMMY_IMAGE_BASE64 or _is_public_binary_placeholder(encoded))
+            and (
+                encoded in {DUMMY_IMAGE_BASE64, PUBLIC_TINY_PNG_BASE64}
+                or _is_public_binary_placeholder(encoded)
+            )
         )
     return False
 

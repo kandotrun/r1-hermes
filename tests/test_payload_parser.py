@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -13,6 +14,11 @@ from r1_hermes.payloads import (
 )
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "r1_payloads"
+PUBLIC_TINY_PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/"
+    "p9sAAAAASUVORK5CYII="
+)
+PUBLIC_TINY_PNG_BYTES = base64.b64decode(PUBLIC_TINY_PNG_BASE64)
 
 
 def load_fixture(name: str):
@@ -168,23 +174,22 @@ def test_chat_camera_image_fixture_is_parsed_as_safe_attachment_metadata():
 def test_real_device_camera_flow_fixture_is_parsed_as_safe_attachment_metadata():
     frame = fixture_frame("real_device_camera_media_flow.json", "chat-camera-flow-001")
 
-    replay_frame = json.loads(
-        json.dumps(frame).replace("DUMMY_BINARY_DATA_OMITTED", "cjEtaW1hZ2U=")
-    )
-    request = parse_chat_send_params(request_params(replay_frame))
+    request = parse_chat_send_params(request_params(frame))
 
     assert request.message == "describe the sanitized camera image"
     assert request.session_key == "camera-main"
     assert request.idempotency_key == "camera-run-001"
     assert len(request.attachments) == 1
     attachment = request.attachments[0]
-    assert attachment.mime_type == "image/jpeg"
+    assert attachment.mime_type == "image/png"
     assert attachment.source_field == "message.content.data"
-    assert attachment.filename == "r1-camera.jpg"
-    assert attachment.extension == "jpg"
-    assert attachment.size_bytes == len(b"r1-image")
-    assert attachment.content_hash == f"sha256:{hashlib.sha256(b'r1-image').hexdigest()[:16]}"
-    assert attachment.data == b"r1-image"
+    assert attachment.filename == "r1-camera.png"
+    assert attachment.extension == "png"
+    assert attachment.size_bytes == len(PUBLIC_TINY_PNG_BYTES)
+    assert attachment.content_hash == (
+        f"sha256:{hashlib.sha256(PUBLIC_TINY_PNG_BYTES).hexdigest()[:16]}"
+    )
+    assert attachment.data == PUBLIC_TINY_PNG_BYTES
     assert "cjEtaW1hZ2U=" not in repr(request)
     assert "data:image" not in repr(request)
 
